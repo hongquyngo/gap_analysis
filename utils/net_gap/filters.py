@@ -244,7 +244,7 @@ class GAPFilters:
     
     def _render_product_filters(self, filters: Dict[str, Any]) -> None:
         """Render product-related filters - ALL MULTISELECT NOW"""
-        col1, col2, col3 = st.columns([2, 1, 1])
+        col1, col2, col3 = st.columns([2, 1, 2])
         
         with col1:
             st.subheader("🔍 Product Selection")
@@ -293,10 +293,10 @@ class GAPFilters:
         
         # Create display names for products
         products_df['display_name'] = products_df.apply(
-            lambda x: f"{x['pt_code']} - {x['product_name'][:40]}...", 
+            lambda x: f"{x['pt_code']} - {x['product_name'][:40]}{'...' if len(x['product_name']) > 40 else ''}",
             axis=1
         )
-        
+                
         # Get currently selected products
         selected_products = st.session_state.gap_filters.get('products', [])
         
