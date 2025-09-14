@@ -1,0 +1,19 @@
+{
+    "sqltools.connections": [
+        {
+            "mysqlOptions": {
+                "authProtocol": "default",
+                "enableSsl": "Disabled"
+            },
+            "ssh": "Disabled",
+            "previewLimit": 50,
+            "server": "erp-all-production.cx1uaj6vj8s5.ap-southeast-1.rds.amazonaws.com",
+            "port": 3306,
+            "driver": "MySQL",
+            "name": "streamlit_user",
+            "database": "prostechvn",
+            "username": "streamlit_user",
+            "askForPassword": true
+        }
+    ]
+}
