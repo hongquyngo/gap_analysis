@@ -3,6 +3,7 @@
 """
 Calculator module for GAP Analysis System
 Handles all GAP calculations and aggregations
+Aligned with SQL view logic from net_gap_view_with_fc
 """
 
 import pandas as pd
@@ -27,20 +28,32 @@ class GAPCalculator:
         self,
         supply_df: pd.DataFrame,
         demand_df: pd.DataFrame,
-        group_by: str = 'product'
+        group_by: str = 'product',
+        selected_supply_sources: List[str] = None,
+        selected_demand_sources: List[str] = None
     ) -> pd.DataFrame:
         """
         Calculate simple net GAP (Supply - Demand) without time dimension
+        Aligned with SQL view logic
         
         Args:
             supply_df: Supply data from unified_supply_view
             demand_df: Demand data from unified_demand_view
             group_by: Aggregation level ('product', 'brand', 'category')
+            selected_supply_sources: List of supply sources to include (None = all)
+            selected_demand_sources: List of demand sources to include (None = all)
             
         Returns:
             DataFrame with GAP calculations
         """
         try:
+            # Filter by selected sources
+            if selected_supply_sources:
+                supply_df = supply_df[supply_df['supply_source'].isin(selected_supply_sources)].copy()
+            
+            if selected_demand_sources:
+                demand_df = demand_df[demand_df['demand_source'].isin(selected_demand_sources)].copy()
+            
             # Prepare aggregation columns based on group_by level
             if group_by == 'product':
                 group_cols = ['product_id', 'product_name', 'pt_code', 'brand', 'standard_uom']
@@ -78,31 +91,53 @@ class GAPCalculator:
             # Calculate GAP metrics
             gap_df['net_gap'] = gap_df['total_supply'] - gap_df['total_demand']
             
-            # Calculate GAP percentage (handle division by zero)
+            # Calculate coverage ratio (aligned with SQL view)
+            gap_df['coverage_ratio'] = np.where(
+                gap_df['total_demand'] > 0,
+                gap_df['total_supply'] / gap_df['total_demand'],
+                np.where(gap_df['total_supply'] > 0, 999, 0)
+            )
+            
+            # Calculate GAP percentage (for display)
             gap_df['gap_percentage'] = np.where(
                 gap_df['total_demand'] > 0,
                 (gap_df['net_gap'] / gap_df['total_demand']) * 100,
                 np.where(gap_df['total_supply'] > 0, 100, 0)
             )
             
-            # Calculate coverage rate
-            gap_df['coverage_rate'] = np.where(
-                gap_df['total_demand'] > 0,
-                np.minimum((gap_df['total_supply'] / gap_df['total_demand']) * 100, 100),
-                100
+            # Add gap type (aligned with SQL)
+            gap_df['gap_type'] = np.where(
+                gap_df['total_supply'] > gap_df['total_demand'], 'SURPLUS',
+                np.where(gap_df['total_supply'] < gap_df['total_demand'], 'SHORTAGE', 'BALANCED')
             )
             
-            # Add status classification
+            # Add status classification (aligned with SQL view thresholds)
             gap_df['gap_status'] = gap_df.apply(
-                lambda row: self._classify_gap_status(row['net_gap'], row['total_demand']),
+                lambda row: self._classify_gap_status_sql_aligned(
+                    row['total_supply'], 
+                    row['total_demand'],
+                    row.get('supply_inventory', 0),
+                    row.get('supply_purchase_order', 0)
+                ),
                 axis=1
             )
             
-            # Add suggested action
-            gap_df['suggested_action'] = gap_df.apply(
-                lambda row: self._get_suggested_action(
-                    row['net_gap'], 
+            # Add priority (aligned with SQL)
+            gap_df['priority'] = gap_df.apply(
+                lambda row: self._calculate_priority(
+                    row['total_supply'],
                     row['total_demand'],
+                    row.get('supply_inventory', 0)
+                ),
+                axis=1
+            )
+            
+            # Add suggested action (aligned with SQL)
+            gap_df['suggested_action'] = gap_df.apply(
+                lambda row: self._get_action_required(
+                    row['total_supply'],
+                    row['total_demand'],
+                    row.get('supply_inventory', 0),
                     row.get('avg_days_to_required', None)
                 ),
                 axis=1
@@ -111,21 +146,18 @@ class GAPCalculator:
             # Calculate value impact (if cost/price data available)
             if 'avg_unit_cost_usd' in gap_df.columns:
                 gap_df['gap_value_usd'] = gap_df['net_gap'] * gap_df['avg_unit_cost_usd']
+                gap_df['abs_gap_value_usd'] = abs(gap_df['gap_value_usd'])
                 gap_df['at_risk_value_usd'] = np.where(
                     gap_df['net_gap'] < 0,
                     abs(gap_df['net_gap']) * gap_df.get('avg_selling_price_usd', gap_df['avg_unit_cost_usd']),
                     0
                 )
             
-            # Sort by priority (shortage first, then by absolute gap)
-            gap_df['sort_priority'] = np.where(gap_df['net_gap'] < 0, 0, 1)
+            # Sort by priority and absolute gap value
             gap_df = gap_df.sort_values(
-                by=['sort_priority', 'net_gap'],
-                ascending=[True, True]
+                by=['priority', 'abs_gap_value_usd'] if 'abs_gap_value_usd' in gap_df.columns else ['priority', 'net_gap'],
+                ascending=[True, False]
             )
-            
-            # Drop temporary columns
-            gap_df = gap_df.drop(columns=['sort_priority'], errors='ignore')
             
             logger.info(f"Calculated GAP for {len(gap_df)} {group_by} groups")
             
@@ -135,16 +167,119 @@ class GAPCalculator:
             logger.error(f"Error calculating net GAP: {e}")
             raise
     
+    def _classify_gap_status_sql_aligned(self, supply: float, demand: float, 
+                                         inventory: float = 0, po_qty: float = 0) -> str:
+        """
+        Classify GAP status aligned with SQL view logic
+        """
+        # No demand scenarios
+        if demand == 0:
+            if inventory > 0:
+                return 'NO_DEMAND'
+            elif po_qty > 0:
+                return 'NO_DEMAND_INCOMING'
+            else:
+                return 'NO_DEMAND'
+        
+        # Calculate coverage ratio
+        coverage = supply / demand
+        
+        # Surplus levels
+        if coverage > 3:
+            return 'SEVERE_SURPLUS'
+        elif coverage > 2:
+            return 'HIGH_SURPLUS'
+        elif coverage > 1.5:
+            return 'MODERATE_SURPLUS'
+        elif coverage > 1.1:
+            return 'LIGHT_SURPLUS'
+        
+        # Balanced
+        elif coverage >= 0.9 and coverage <= 1.1:
+            return 'BALANCED'
+        
+        # Shortage levels
+        elif coverage < 0.5:
+            return 'SEVERE_SHORTAGE'
+        elif coverage < 0.7:
+            return 'HIGH_SHORTAGE'
+        elif coverage < 0.9:
+            return 'MODERATE_SHORTAGE'
+        else:
+            return 'UNKNOWN'
+    
+    def _calculate_priority(self, supply: float, demand: float, inventory: float = 0) -> int:
+        """
+        Calculate action priority aligned with SQL view
+        """
+        # Critical priorities
+        if demand == 0 and inventory > 0:
+            return 1
+        if demand > 0 and supply < demand * 0.5:
+            return 1
+        
+        # High priorities
+        if demand > 0 and supply > demand * 3:
+            return 2
+        if demand > 0 and supply < demand * 0.7:
+            return 2
+        
+        # Medium priorities
+        if demand > 0 and supply > demand * 2:
+            return 3
+        if demand > 0 and supply < demand * 0.9:
+            return 3
+        
+        # Low priorities
+        if demand > 0 and supply > demand * 1.5:
+            return 4
+        
+        # OK
+        return 99
+    
+    def _get_action_required(self, supply: float, demand: float, 
+                            inventory: float = 0, avg_days_to_required: Optional[float] = None) -> str:
+        """
+        Generate action required message aligned with SQL view
+        """
+        gap = supply - demand
+        
+        # SURPLUS ACTIONS
+        if demand == 0 and inventory > 0:
+            return f"NO DEMAND: {inventory:.0f} units in stock need liquidation"
+        
+        if demand > 0:
+            coverage = supply / demand
+            
+            if coverage > 3:
+                return f"SEVERE SURPLUS: {gap:.0f} units excess. Stop ordering & promote aggressively"
+            elif coverage > 2:
+                return f"HIGH SURPLUS: {gap:.0f} units excess. Reduce orders & plan promotions"
+            elif coverage > 1.5:
+                return f"MODERATE SURPLUS: {gap:.0f} units excess. Review ordering"
+            elif coverage > 1.1:
+                return "LIGHT SURPLUS: Minor excess, monitor closely"
+            
+            # BALANCED
+            elif coverage >= 0.9 and coverage <= 1.1:
+                return "BALANCED: Supply matches demand well"
+            
+            # SHORTAGE ACTIONS
+            elif coverage < 0.5:
+                shortage = abs(gap)
+                return f"SEVERE SHORTAGE: Need {shortage:.0f} units URGENTLY. Expedite orders!"
+            elif coverage < 0.7:
+                shortage = abs(gap)
+                return f"HIGH SHORTAGE: Need {shortage:.0f} units. Rush orders required"
+            elif coverage < 0.9:
+                shortage = abs(gap)
+                return f"MODERATE SHORTAGE: Need {shortage:.0f} more units"
+        
+        return "Status unclear - review manually"
+    
     def _aggregate_supply(self, supply_df: pd.DataFrame, group_cols: List[str]) -> pd.DataFrame:
         """
         Aggregate supply data by specified columns
-        
-        Args:
-            supply_df: Raw supply data
-            group_cols: Columns to group by
-            
-        Returns:
-            Aggregated supply DataFrame
         """
         # Filter out expired items
         today = pd.Timestamp.now().date()
@@ -211,13 +346,6 @@ class GAPCalculator:
     def _aggregate_demand(self, demand_df: pd.DataFrame, group_cols: List[str]) -> pd.DataFrame:
         """
         Aggregate demand data by specified columns
-        
-        Args:
-            demand_df: Raw demand data
-            group_cols: Columns to group by
-            
-        Returns:
-            Aggregated demand DataFrame
         """
         demand_df = demand_df.copy()
         
@@ -288,96 +416,17 @@ class GAPCalculator:
             0
         )
         
-        # Add customer breakdown for tooltips (if not too many)
-        if 'customer' in demand_df.columns and group_cols != ['customer']:
-            customer_agg = demand_df.groupby(group_cols + ['customer'])['required_quantity'].sum()
-            demand_agg['customer_breakdown'] = demand_agg.apply(
-                lambda row: self._get_customer_breakdown(row, customer_agg, group_cols),
-                axis=1
-            )
-        
         return demand_agg
-    
-    def _get_customer_breakdown(self, row: pd.Series, customer_agg: pd.Series, 
-                               group_cols: List[str]) -> Dict[str, float]:
-        """Get customer breakdown for a specific group"""
-        try:
-            # Build index tuple for the group
-            if len(group_cols) == 1:
-                group_key = row[group_cols[0]]
-            else:
-                group_key = tuple(row[col] for col in group_cols)
-            
-            # Get all customers for this group
-            if group_key in customer_agg.index.get_level_values(0):
-                customers = customer_agg.loc[group_key]
-                if isinstance(customers, pd.Series):
-                    return customers.to_dict()
-                else:
-                    return {customers.name[-1]: float(customers)}
-        except:
-            pass
-        
-        return {}
-    
-    def _classify_gap_status(self, gap_value: float, demand_value: float) -> str:
-        """Classify GAP status based on value and percentage"""
-        if demand_value == 0:
-            if gap_value > 0:
-                return 'high_surplus'
-            else:
-                return 'balanced'
-        
-        gap_percent = gap_value / demand_value
-        
-        if gap_percent < -0.5:
-            return 'severe_shortage'
-        elif gap_percent < -0.2:
-            return 'high_shortage'
-        elif gap_percent < -0.05:
-            return 'low_shortage'
-        elif gap_percent <= 0.1:
-            return 'balanced'
-        elif gap_percent <= 0.5:
-            return 'surplus'
-        else:
-            return 'high_surplus'
-    
-    def _get_suggested_action(self, gap_value: float, demand_value: float,
-                             avg_days_to_required: Optional[float] = None) -> str:
-        """Generate suggested action based on GAP analysis"""
-        if demand_value == 0:
-            return "Monitor for demand changes"
-        
-        gap_percent = gap_value / demand_value
-        
-        if gap_percent < -0.5:
-            action = "Create emergency PO"
-            if avg_days_to_required and avg_days_to_required < 7:
-                action += " + expedite shipping"
-        elif gap_percent < -0.2:
-            action = "Create PO within 2 days"
-        elif gap_percent < -0.05:
-            action = "Plan PO for next week"
-        elif gap_percent <= 0.1:
-            action = "Monitor stock levels"
-        elif gap_percent <= 0.5:
-            action = "Review demand forecast"
-        else:
-            action = "Consider redistribution"
-        
-        return action
     
     def get_summary_metrics(self, gap_df: pd.DataFrame) -> Dict[str, any]:
         """
         Calculate summary metrics from GAP analysis
-        
-        Args:
-            gap_df: DataFrame with GAP calculations
-            
-        Returns:
-            Dictionary of summary metrics
         """
+        # Count different statuses
+        shortage_statuses = ['SEVERE_SHORTAGE', 'HIGH_SHORTAGE', 'MODERATE_SHORTAGE']
+        critical_statuses = ['SEVERE_SHORTAGE', 'HIGH_SHORTAGE']
+        surplus_statuses = ['SEVERE_SURPLUS', 'HIGH_SURPLUS', 'MODERATE_SURPLUS', 'LIGHT_SURPLUS']
+        
         metrics = {
             'total_products': len(gap_df),
             'total_supply': gap_df['total_supply'].sum(),
@@ -385,15 +434,15 @@ class GAPCalculator:
             'net_gap': gap_df['net_gap'].sum(),
             
             # Shortage metrics
-            'shortage_items': len(gap_df[gap_df['net_gap'] < 0]),
+            'shortage_items': len(gap_df[gap_df['gap_status'].isin(shortage_statuses)]),
             'total_shortage': abs(gap_df[gap_df['net_gap'] < 0]['net_gap'].sum()),
             
             # Surplus metrics
-            'surplus_items': len(gap_df[gap_df['net_gap'] > 0]),
+            'surplus_items': len(gap_df[gap_df['gap_status'].isin(surplus_statuses)]),
             'total_surplus': gap_df[gap_df['net_gap'] > 0]['net_gap'].sum(),
             
             # Critical items (severe + high shortage)
-            'critical_items': len(gap_df[gap_df['gap_status'].isin(['severe_shortage', 'high_shortage'])]),
+            'critical_items': len(gap_df[gap_df['gap_status'].isin(critical_statuses)]),
             
             # Coverage
             'overall_coverage': (gap_df['total_supply'].sum() / gap_df['total_demand'].sum() * 100) 
