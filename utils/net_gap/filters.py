@@ -1,8 +1,11 @@
 # utils/net_gap/filters.py
 
 """
-Filter components module for GAP Analysis System - Clean Version
-Provides reusable filter UI components for main page
+Filter components module for GAP Analysis System - Updated Version
+- Removed Category grouping
+- Removed Quick Date Range presets
+- Changed to multiselect for Products and Customers
+- Auto-detect date range from data
 """
 
 import streamlit as st
@@ -15,8 +18,7 @@ logger = logging.getLogger(__name__)
 
 # Filter configuration constants
 DEFAULT_DATE_RANGE_DAYS = 30
-MAX_CUSTOMER_DROPDOWN = 100
-MAX_PRODUCT_SEARCH_RESULTS = 50
+MAX_MULTISELECT_DISPLAY = 200
 
 QUICK_FILTER_OPTIONS = {
     'all': '📋 All Items',
@@ -26,10 +28,10 @@ QUICK_FILTER_OPTIONS = {
     'balanced': '✅ Balanced Only'
 }
 
+# REMOVED CATEGORY - Only Product and Brand
 GROUP_BY_OPTIONS = {
     'product': '📦 Product',
-    'brand': '🏷️ Brand',
-    'category': '📂 Category'
+    'brand': '🏷️ Brand'
 }
 
 SUPPLY_SOURCES = {
@@ -42,15 +44,6 @@ SUPPLY_SOURCES = {
 DEMAND_SOURCES = {
     'OC_PENDING': '📋 Confirmed Orders (OC)',
     'FORECAST': '📊 Customer Forecast'
-}
-
-DATE_PRESETS = {
-    "Today": 0,
-    "7 Days": 7,
-    "14 Days": 14,
-    "30 Days": 30,
-    "60 Days": 60,
-    "90 Days": 90
 }
 
 
@@ -73,18 +66,34 @@ class GAPFilters:
             st.session_state.gap_filters = self._get_default_filters()
     
     def _get_default_filters(self) -> Dict[str, Any]:
-        """Get default filter values"""
+        """Get default filter values with auto date range"""
+        # Get date range from data
+        date_range = self._get_data_date_range()
+        
         return {
             'entity': None,
-            'date_range': (date.today(), date.today() + timedelta(days=DEFAULT_DATE_RANGE_DAYS)),
-            'products': [],
+            'date_range': date_range,
+            'products': [],  # Multiselect - empty list
             'brands': [],
-            'customers': [],
+            'customers': [],  # Multiselect - empty list
             'quick_filter': 'all',
-            'group_by': 'product',
+            'group_by': 'product',  # Default to product
             'supply_sources': list(SUPPLY_SOURCES.keys()),
             'demand_sources': list(DEMAND_SOURCES.keys())
         }
+    
+    def _get_data_date_range(self) -> tuple:
+        """Get min/max dates from supply and demand data"""
+        try:
+            # Try to get date range from data loader
+            date_info = self.data_loader.get_date_range()
+            if date_info and 'min_date' in date_info and 'max_date' in date_info:
+                return (date_info['min_date'], date_info['max_date'])
+        except Exception as e:
+            logger.warning(f"Could not get date range from data: {e}")
+        
+        # Fallback to default 30 days
+        return (date.today(), date.today() + timedelta(days=DEFAULT_DATE_RANGE_DAYS))
     
     def render_main_page_filters(self) -> Dict[str, Any]:
         """
@@ -100,7 +109,7 @@ class GAPFilters:
             self._render_quick_controls(filters)
             st.divider()
             
-            # Entity and date range
+            # Entity and date range (NO QUICK DATE PRESETS)
             self._render_basic_filters(filters)
             st.divider()
             
@@ -108,12 +117,16 @@ class GAPFilters:
             self._render_source_selection(filters)
             st.divider()
             
-            # Product filters
+            # Product filters (ALL MULTISELECT NOW)
             self._render_product_filters(filters)
             st.divider()
             
             # Filter actions
             self._render_filter_actions(filters)
+        
+        # Validate group_by - only allow product or brand
+        if filters.get('group_by') not in ['product', 'brand']:
+            filters['group_by'] = 'product'
         
         # Save to session state
         st.session_state.gap_filters = filters
@@ -150,16 +163,19 @@ class GAPFilters:
             )
     
     def _render_basic_filters(self, filters: Dict[str, Any]) -> None:
-        """Render entity and date range filters"""
+        """Render entity and date range filters WITHOUT quick date presets"""
         col1, col2, col3 = st.columns([1, 1, 1])
         
         with col1:
             filters['entity'] = self._render_entity_filter()
         
+        # Get current or default date range
+        current_range = st.session_state.gap_filters.get('date_range', self._get_data_date_range())
+        
         with col2:
             date_from = st.date_input(
                 "📅 From Date",
-                value=st.session_state.gap_filters['date_range'][0],
+                value=current_range[0],
                 max_value=date.today() + timedelta(days=365),
                 help="Start date for analysis"
             )
@@ -167,7 +183,7 @@ class GAPFilters:
         with col3:
             date_to = st.date_input(
                 "📅 To Date",
-                value=st.session_state.gap_filters['date_range'][1],
+                value=current_range[1],
                 min_value=date_from,
                 max_value=date.today() + timedelta(days=365),
                 help="End date for analysis"
@@ -175,18 +191,9 @@ class GAPFilters:
         
         filters['date_range'] = (date_from, date_to)
         
-        # Date presets
-        st.markdown("**Quick Date Range:**")
-        preset_cols = st.columns(len(DATE_PRESETS))
-        
-        for idx, (label, days) in enumerate(DATE_PRESETS.items()):
-            with preset_cols[idx]:
-                if st.button(label, key=f"date_preset_{days}", use_container_width=True):
-                    st.session_state.gap_filters['date_range'] = (
-                        date.today(),
-                        date.today() + timedelta(days=days)
-                    )
-                    st.rerun()
+        # Show date range info
+        days_diff = (date_to - date_from).days
+        st.caption(f"📅 Date range: {days_diff} days selected")
     
     def _render_source_selection(self, filters: Dict[str, Any]) -> None:
         """Render supply and demand source selection"""
@@ -236,12 +243,12 @@ class GAPFilters:
         return selected
     
     def _render_product_filters(self, filters: Dict[str, Any]) -> None:
-        """Render product-related filters"""
+        """Render product-related filters - ALL MULTISELECT NOW"""
         col1, col2, col3 = st.columns([2, 1, 1])
         
         with col1:
             st.subheader("🔍 Product Selection")
-            filters['products'] = self._render_product_selector(filters.get('entity'))
+            filters['products'] = self._render_product_multiselect(filters.get('entity'))
         
         with col2:
             st.subheader("🏷️ Brands")
@@ -249,7 +256,7 @@ class GAPFilters:
         
         with col3:
             st.subheader("🏢 Customers")
-            filters['customers'] = self._render_customer_selector(filters.get('entity'))
+            filters['customers'] = self._render_customer_multiselect(filters.get('entity'))
     
     def _render_entity_filter(self) -> Optional[str]:
         """Render entity selection filter"""
@@ -276,54 +283,44 @@ class GAPFilters:
         
         return None if selected == "All Entities" else selected
     
-    def _render_product_selector(self, entity: Optional[str]) -> List[int]:
-        """Render product selection with search"""
+    def _render_product_multiselect(self, entity: Optional[str]) -> List[int]:
+        """Render product selection as MULTISELECT"""
         products_df = self.data_loader.get_products(entity)
         
         if products_df.empty:
             st.info("No products available")
             return []
         
-        # Search input
-        search_term = st.text_input(
-            "Search",
-            placeholder="Enter PT code or product name...",
-            label_visibility="collapsed"
+        # Create display names for products
+        products_df['display_name'] = products_df.apply(
+            lambda x: f"{x['pt_code']} - {x['product_name'][:40]}...", 
+            axis=1
         )
         
+        # Get currently selected products
         selected_products = st.session_state.gap_filters.get('products', [])
         
-        if search_term:
-            # Filter products based on search
-            mask = (
-                products_df['pt_code'].str.contains(search_term, case=False, na=False) |
-                products_df['product_name'].str.contains(search_term, case=False, na=False)
-            )
-            filtered_products = products_df[mask].head(MAX_PRODUCT_SEARCH_RESULTS)
-            
-            if not filtered_products.empty:
-                # Create display names
-                filtered_products['display'] = filtered_products.apply(
-                    lambda x: f"{x['pt_code']} - {x['product_name'][:30]}{'...' if len(x['product_name']) > 30 else ''}", 
-                    axis=1
-                )
-                
-                selected_products = st.multiselect(
-                    "Select products",
-                    options=filtered_products['product_id'].tolist(),
-                    format_func=lambda x: filtered_products[
-                        filtered_products['product_id'] == x
-                    ]['display'].iloc[0],
-                    default=[p for p in selected_products if p in filtered_products['product_id'].tolist()],
-                    label_visibility="collapsed"
-                )
-        elif selected_products:
-            st.info(f"✓ {len(selected_products)} products selected")
+        # Multiselect widget
+        selected = st.multiselect(
+            "Select products",
+            options=products_df['product_id'].tolist(),
+            default=[p for p in selected_products if p in products_df['product_id'].tolist()],
+            format_func=lambda x: products_df[products_df['product_id'] == x]['display_name'].iloc[0],
+            placeholder="All products (leave empty for all)",
+            label_visibility="collapsed",
+            help="Select specific products or leave empty for all"
+        )
         
-        return selected_products
+        # Show count
+        if selected:
+            st.caption(f"✓ {len(selected)} products selected")
+        else:
+            st.caption("All products selected")
+        
+        return selected
     
     def _render_brand_selector(self, entity: Optional[str]) -> List[str]:
-        """Render brand selection"""
+        """Render brand selection (already multiselect)"""
         brands = self.data_loader.get_brands(entity)
         
         if not brands:
@@ -334,41 +331,35 @@ class GAPFilters:
             options=brands,
             default=st.session_state.gap_filters.get('brands', []),
             label_visibility="collapsed",
-            placeholder="All brands"
+            placeholder="All brands (leave empty for all)"
         )
     
-    def _render_customer_selector(self, entity: Optional[str]) -> List[str]:
-        """Render customer selection"""
+    def _render_customer_multiselect(self, entity: Optional[str]) -> List[str]:
+        """Render customer selection as MULTISELECT"""
         customers = self.data_loader.get_customers(entity)
         
         if not customers:
             return []
         
-        # Handle large customer lists with search
-        if len(customers) > MAX_CUSTOMER_DROPDOWN:
-            search_customer = st.text_input(
-                "Search",
-                placeholder="Enter customer name...",
-                label_visibility="collapsed"
-            )
-            
-            if search_customer:
-                filtered = [c for c in customers if search_customer.lower() in c.lower()]
-                return st.multiselect(
-                    "Select",
-                    options=filtered[:20],
-                    default=st.session_state.gap_filters.get('customers', []),
-                    label_visibility="collapsed"
-                )
-            return []
+        # Limit display if too many customers
+        if len(customers) > MAX_MULTISELECT_DISPLAY:
+            st.info(f"Too many customers ({len(customers)}). Showing first {MAX_MULTISELECT_DISPLAY}")
+            customers = customers[:MAX_MULTISELECT_DISPLAY]
         
-        return st.multiselect(
+        selected = st.multiselect(
             "Select customers",
             options=customers,
             default=st.session_state.gap_filters.get('customers', []),
             label_visibility="collapsed",
-            placeholder="All customers"
+            placeholder="All customers (leave empty for all)",
+            help="Select specific customers or leave empty for all"
         )
+        
+        # Show count
+        if selected:
+            st.caption(f"✓ {len(selected)} customers selected")
+        
+        return selected
     
     def _render_filter_actions(self, filters: Dict[str, Any]) -> None:
         """Render filter action buttons"""
@@ -396,11 +387,11 @@ class GAPFilters:
         # Check each filter against defaults
         if filters.get('entity') != defaults['entity']:
             count += 1
-        if filters.get('products'):
+        if filters.get('products'):  # Not empty list
             count += 1
         if filters.get('brands'):
             count += 1
-        if filters.get('customers'):
+        if filters.get('customers'):  # Not empty list
             count += 1
         if filters.get('quick_filter') != defaults['quick_filter']:
             count += 1

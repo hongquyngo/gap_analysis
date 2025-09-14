@@ -1,8 +1,9 @@
 # utils/net_gap/data_loader.py
 
 """
-Data loader module for GAP Analysis System - Clean Version
-Handles loading and caching of supply and demand data from unified views
+Data loader module for GAP Analysis System - Updated Version
+- Added get_date_range() method for auto date detection
+- Improved product/customer selection support
 """
 
 import pandas as pd
@@ -52,6 +53,63 @@ class GAPDataLoader:
         finally:
             conn.close()
     
+    @st.cache_data(ttl=CACHE_TTL_REFERENCE)
+    def get_date_range(_self) -> Dict[str, date]:
+        """
+        Get min and max dates from supply and demand views
+        Returns dict with 'min_date' and 'max_date'
+        """
+        try:
+            query = """
+                SELECT 
+                    MIN(date_col) as min_date,
+                    MAX(date_col) as max_date
+                FROM (
+                    -- Supply dates
+                    SELECT availability_date as date_col 
+                    FROM unified_supply_view 
+                    WHERE availability_date IS NOT NULL
+                    
+                    UNION ALL
+                    
+                    -- Demand dates
+                    SELECT required_date as date_col 
+                    FROM unified_demand_view 
+                    WHERE required_date IS NOT NULL
+                ) AS all_dates
+                WHERE date_col >= DATE_SUB(CURRENT_DATE, INTERVAL 1 YEAR)
+                  AND date_col <= DATE_ADD(CURRENT_DATE, INTERVAL 1 YEAR)
+            """
+            
+            with _self.get_connection() as conn:
+                result = conn.execute(text(query)).fetchone()
+                
+                if result and result[0] and result[1]:
+                    min_date = pd.to_datetime(result[0]).date()
+                    max_date = pd.to_datetime(result[1]).date()
+                    
+                    logger.info(f"Date range from data: {min_date} to {max_date}")
+                    
+                    return {
+                        'min_date': min_date,
+                        'max_date': max_date
+                    }
+            
+            # Default fallback
+            logger.warning("Could not get date range from database, using defaults")
+            return {
+                'min_date': date.today(),
+                'max_date': date.today() + timedelta(days=30)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting date range: {e}", exc_info=True)
+            # Return default range on error
+            return {
+                'min_date': date.today(),
+                'max_date': date.today() + timedelta(days=30)
+            }
+    
     @st.cache_data(ttl=CACHE_TTL_DATA)
     def load_supply_data(
         _self,
@@ -68,8 +126,8 @@ class GAPDataLoader:
             entity_name: Filter by entity
             date_from: Start date for availability_date filter
             date_to: End date for availability_date filter
-            product_ids: List of product IDs to filter
-            brands: List of brands to filter
+            product_ids: List of product IDs to filter (multiselect)
+            brands: List of brands to filter (multiselect)
             
         Returns:
             DataFrame with supply data
@@ -110,9 +168,9 @@ class GAPDataLoader:
             entity_name: Filter by entity
             date_from: Start date for required_date filter
             date_to: End date for required_date filter
-            product_ids: List of product IDs to filter
-            brands: List of brands to filter
-            customers: List of customers to filter
+            product_ids: List of product IDs to filter (multiselect)
+            brands: List of brands to filter (multiselect)
+            customers: List of customers to filter (multiselect)
             
         Returns:
             DataFrame with demand data
@@ -194,14 +252,15 @@ class GAPDataLoader:
             query_parts.append("AND availability_date <= :date_to")
             params['date_to'] = date_to
         
-        if product_ids:
-            # Use parameterized IN clause
+        # Handle multiselect product_ids (can be empty list for all)
+        if product_ids:  # Only filter if list is not empty
             product_placeholders = [f":prod_{i}" for i in range(len(product_ids))]
             query_parts.append(f"AND product_id IN ({','.join(product_placeholders)})")
             for i, pid in enumerate(product_ids):
                 params[f'prod_{i}'] = pid
         
-        if brands:
+        # Handle multiselect brands (can be empty list for all)
+        if brands:  # Only filter if list is not empty
             brand_placeholders = [f":brand_{i}" for i in range(len(brands))]
             query_parts.append(f"AND brand IN ({','.join(brand_placeholders)})")
             for i, brand in enumerate(brands):
@@ -269,19 +328,22 @@ class GAPDataLoader:
             query_parts.append("AND required_date <= :date_to")
             params['date_to'] = date_to
         
-        if product_ids:
+        # Handle multiselect product_ids (can be empty list for all)
+        if product_ids:  # Only filter if list is not empty
             product_placeholders = [f":prod_{i}" for i in range(len(product_ids))]
             query_parts.append(f"AND product_id IN ({','.join(product_placeholders)})")
             for i, pid in enumerate(product_ids):
                 params[f'prod_{i}'] = pid
         
-        if brands:
+        # Handle multiselect brands (can be empty list for all)
+        if brands:  # Only filter if list is not empty
             brand_placeholders = [f":brand_{i}" for i in range(len(brands))]
             query_parts.append(f"AND brand IN ({','.join(brand_placeholders)})")
             for i, brand in enumerate(brands):
                 params[f'brand_{i}'] = brand
         
-        if customers:
+        # Handle multiselect customers (can be empty list for all)
+        if customers:  # Only filter if list is not empty
             customer_placeholders = [f":cust_{i}" for i in range(len(customers))]
             query_parts.append(f"AND customer IN ({','.join(customer_placeholders)})")
             for i, customer in enumerate(customers):
@@ -374,7 +436,7 @@ class GAPDataLoader:
     
     @st.cache_data(ttl=CACHE_TTL_REFERENCE)
     def get_products(_self, entity_name: Optional[str] = None) -> pd.DataFrame:
-        """Get list of products with basic info"""
+        """Get list of products with basic info for multiselect"""
         try:
             params = {}
             
@@ -395,13 +457,15 @@ class GAPDataLoader:
                     SELECT product_id, product_name, pt_code, brand, 
                            standard_uom, entity_name
                     FROM unified_supply_view
+                    WHERE product_id IS NOT NULL
                     UNION
                     SELECT product_id, product_name, pt_code, brand,
                            standard_uom, entity_name
                     FROM unified_demand_view
+                    WHERE product_id IS NOT NULL
                 ) AS products
                 {entity_filter}
-                ORDER BY product_name
+                ORDER BY pt_code, product_name
             """
             
             with _self.get_connection() as conn:
@@ -415,7 +479,7 @@ class GAPDataLoader:
     
     @st.cache_data(ttl=CACHE_TTL_REFERENCE)
     def get_brands(_self, entity_name: Optional[str] = None) -> List[str]:
-        """Get list of unique brands"""
+        """Get list of unique brands for multiselect"""
         try:
             params = {}
             
@@ -450,7 +514,7 @@ class GAPDataLoader:
     
     @st.cache_data(ttl=CACHE_TTL_REFERENCE)
     def get_customers(_self, entity_name: Optional[str] = None) -> List[str]:
-        """Get list of unique customers"""
+        """Get list of unique customers for multiselect"""
         try:
             query = """
                 SELECT DISTINCT customer

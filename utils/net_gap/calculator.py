@@ -1,9 +1,9 @@
 # utils/net_gap/calculator.py
 
 """
-Calculator module for GAP Analysis System - Clean Version
-Handles all GAP calculations and aggregations
-Aligned with SQL view logic from net_gap_view_with_fc
+Calculator module for GAP Analysis System - UPDATED VERSION
+- Removed Category grouping logic
+- Only supports Product and Brand grouping
 """
 
 import pandas as pd
@@ -43,6 +43,7 @@ class GAPCalculator:
         """Initialize calculator with default settings"""
         self.supply_sources = ['INVENTORY', 'CAN_PENDING', 'WAREHOUSE_TRANSFER', 'PURCHASE_ORDER']
         self.demand_sources = ['OC_PENDING', 'FORECAST']
+        self._filtered_demand_df = None  # Store filtered demand data for unique customer calculations
     
     def calculate_net_gap(
         self,
@@ -58,7 +59,7 @@ class GAPCalculator:
         Args:
             supply_df: Supply data from unified_supply_view
             demand_df: Demand data from unified_demand_view
-            group_by: Aggregation level ('product', 'brand', 'category')
+            group_by: Aggregation level ('product' or 'brand' only)
             selected_supply_sources: Supply sources to include
             selected_demand_sources: Demand sources to include
             
@@ -66,6 +67,11 @@ class GAPCalculator:
             DataFrame with GAP calculations
         """
         try:
+            # Validate group_by parameter - ONLY product or brand allowed
+            if group_by not in ['product', 'brand']:
+                logger.warning(f"Invalid group_by value: {group_by}, defaulting to 'product'")
+                group_by = 'product'
+            
             # Filter by selected sources
             if selected_supply_sources:
                 supply_df = supply_df[supply_df['supply_source'].isin(selected_supply_sources)].copy()
@@ -73,8 +79,11 @@ class GAPCalculator:
             if selected_demand_sources:
                 demand_df = demand_df[demand_df['demand_source'].isin(selected_demand_sources)].copy()
             
-            # Get group columns
-            group_cols = self._get_group_columns(group_by, supply_df, demand_df)
+            # IMPORTANT: Store filtered demand_df for unique customer calculation later
+            self._filtered_demand_df = demand_df.copy()
+            
+            # Get group columns (NO CATEGORY HANDLING)
+            group_cols = self._get_group_columns(group_by)
             
             # Aggregate supply and demand
             supply_agg = self._aggregate_supply(supply_df, group_cols)
@@ -109,25 +118,27 @@ class GAPCalculator:
             logger.error(f"Error calculating net GAP: {e}", exc_info=True)
             raise
     
-    def _get_group_columns(self, group_by: str, supply_df: pd.DataFrame, 
-                          demand_df: pd.DataFrame) -> List[str]:
-        """Get grouping columns based on aggregation level"""
+    def _get_group_columns(self, group_by: str) -> List[str]:
+        """
+        Get grouping columns based on aggregation level
+        REMOVED CATEGORY LOGIC - Only product or brand
+        """
         if group_by == 'product':
             return ['product_id', 'product_name', 'pt_code', 'brand', 'standard_uom']
         elif group_by == 'brand':
             return ['brand']
-        else:  # category
-            # Add category column based on PT code prefix
-            if 'pt_code' in supply_df.columns:
-                supply_df['category'] = supply_df['pt_code'].str[:2].fillna('Unknown')
-            if 'pt_code' in demand_df.columns:
-                demand_df['category'] = demand_df['pt_code'].str[:2].fillna('Unknown')
-            return ['category']
+        else:
+            # This should not happen due to validation, but safety fallback
+            logger.error(f"Unexpected group_by value: {group_by}")
+            return ['product_id', 'product_name', 'pt_code', 'brand', 'standard_uom']
     
     def _aggregate_supply(self, supply_df: pd.DataFrame, group_cols: List[str]) -> pd.DataFrame:
         """Aggregate supply data by specified columns"""
         if supply_df.empty:
             return pd.DataFrame(columns=group_cols + ['total_supply'])
+        
+        # Create explicit copy to avoid SettingWithCopyWarning
+        supply_df = supply_df.copy()
         
         # Filter out expired items
         today = pd.Timestamp.now().date()
@@ -135,7 +146,7 @@ class GAPCalculator:
             supply_df = supply_df[
                 (supply_df['expiry_date'].isna()) | 
                 (pd.to_datetime(supply_df['expiry_date']).dt.date > today)
-            ]
+            ].copy()
         
         # Create aggregation dictionary
         agg_dict = {
@@ -146,7 +157,7 @@ class GAPCalculator:
         # Add source-specific columns for breakdown
         for source in self.supply_sources:
             col_name = f'supply_{source.lower()}'
-            supply_df[col_name] = np.where(
+            supply_df.loc[:, col_name] = np.where(
                 supply_df['supply_source'] == source,
                 supply_df['available_quantity'],
                 0
@@ -155,7 +166,7 @@ class GAPCalculator:
         
         # Add weighted average cost calculation
         if 'unit_cost_usd' in supply_df.columns:
-            supply_df['cost_x_qty'] = supply_df['unit_cost_usd'] * supply_df['available_quantity']
+            supply_df.loc[:, 'cost_x_qty'] = supply_df['unit_cost_usd'] * supply_df['available_quantity']
             agg_dict['cost_x_qty'] = 'sum'
         
         # Perform aggregation
@@ -179,15 +190,20 @@ class GAPCalculator:
         return supply_agg
     
     def _aggregate_demand(self, demand_df: pd.DataFrame, group_cols: List[str]) -> pd.DataFrame:
-        """Aggregate demand data by specified columns"""
+        """
+        Aggregate demand data by specified columns
+        """
         if demand_df.empty:
             return pd.DataFrame(columns=group_cols + ['total_demand'])
+        
+        # Create explicit copy
+        demand_df = demand_df.copy()
         
         # Create aggregation dictionary
         agg_dict = {
             'required_quantity': 'sum',
-            'total_value_usd': 'sum',
-            'customer': 'nunique'
+            'total_value_usd': 'sum',  # Already in USD
+            'customer': 'nunique'  # Count unique customers
         }
         
         # Add optional columns if they exist
@@ -205,23 +221,18 @@ class GAPCalculator:
         # Add source-specific columns
         for source in self.demand_sources:
             col_name = f'demand_{source.lower()}'
-            demand_df[col_name] = np.where(
+            demand_df.loc[:, col_name] = np.where(
                 demand_df['demand_source'] == source,
                 demand_df['required_quantity'],
                 0
             )
             agg_dict[col_name] = 'sum'
         
-        # Add weighted average price calculation
-        if 'selling_unit_price' in demand_df.columns:
-            demand_df['price_x_qty'] = demand_df['selling_unit_price'] * demand_df['required_quantity']
-            agg_dict['price_x_qty'] = 'sum'
-        
         # Count urgency levels
         if 'urgency_level' in demand_df.columns:
             for urgency in ['OVERDUE', 'URGENT']:
                 col_name = f'count_{urgency.lower()}'
-                demand_df[col_name] = (demand_df['urgency_level'] == urgency).astype(int)
+                demand_df.loc[:, col_name] = (demand_df['urgency_level'] == urgency).astype(int)
                 agg_dict[col_name] = 'sum'
         
         # Perform aggregation
@@ -235,14 +246,12 @@ class GAPCalculator:
             'days_to_required': 'avg_days_to_required'
         }, inplace=True)
         
-        # Calculate weighted average selling price
-        if 'price_x_qty' in demand_agg.columns:
-            demand_agg['avg_selling_price_usd'] = np.where(
-                demand_agg['total_demand'] > 0,
-                demand_agg['price_x_qty'] / demand_agg['total_demand'],
-                0
-            )
-            demand_agg.drop(columns=['price_x_qty'], inplace=True)
+        # Calculate weighted average selling price from USD values
+        demand_agg['avg_selling_price_usd'] = np.where(
+            demand_agg['total_demand'] > 0,
+            demand_agg['demand_value_usd'] / demand_agg['total_demand'],
+            0
+        )
         
         # Calculate allocation coverage
         if 'allocated_quantity' in demand_agg.columns:
@@ -255,7 +264,9 @@ class GAPCalculator:
         return demand_agg
     
     def _calculate_gap_metrics(self, gap_df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate all GAP-related metrics"""
+        """
+        Calculate all GAP-related metrics
+        """
         # Basic GAP calculations
         gap_df['net_gap'] = gap_df['total_supply'] - gap_df['total_demand']
         
@@ -304,13 +315,37 @@ class GAPCalculator:
         # Value calculations
         if 'avg_unit_cost_usd' in gap_df.columns:
             gap_df['gap_value_usd'] = gap_df['net_gap'] * gap_df['avg_unit_cost_usd']
-            
-            # At-risk value for shortages
-            gap_df['at_risk_value_usd'] = np.where(
-                gap_df['net_gap'] < 0,
-                abs(gap_df['net_gap']) * gap_df.get('avg_selling_price_usd', gap_df['avg_unit_cost_usd']),
+        
+        # At-risk value calculation
+        if 'demand_value_usd' in gap_df.columns and 'total_demand' in gap_df.columns:
+            # Calculate the proportion of shortage and apply to total demand value
+            gap_df['shortage_ratio'] = np.where(
+                (gap_df['net_gap'] < 0) & (gap_df['total_demand'] > 0),
+                abs(gap_df['net_gap']) / gap_df['total_demand'],
                 0
             )
+            gap_df['at_risk_value_usd'] = gap_df['shortage_ratio'] * gap_df['demand_value_usd']
+            
+            # Clean up temporary column
+            gap_df.drop(columns=['shortage_ratio'], inplace=True)
+            
+        # Alternative fallback if demand_value_usd not available
+        elif 'avg_selling_price_usd' in gap_df.columns:
+            gap_df['at_risk_value_usd'] = np.where(
+                gap_df['net_gap'] < 0,
+                abs(gap_df['net_gap']) * gap_df['avg_selling_price_usd'],
+                0
+            )
+        # Final fallback to cost
+        elif 'avg_unit_cost_usd' in gap_df.columns:
+            gap_df['at_risk_value_usd'] = np.where(
+                gap_df['net_gap'] < 0,
+                abs(gap_df['net_gap']) * gap_df['avg_unit_cost_usd'],
+                0
+            )
+        else:
+            gap_df['at_risk_value_usd'] = 0
+            logger.warning("No value information available for at_risk_value_usd calculation")
         
         return gap_df
     
@@ -384,12 +419,67 @@ class GAPCalculator:
         else:
             return f"SEVERE SURPLUS {gap:.0f} units. Stop ordering immediately!"
     
+    def _calculate_unique_affected_customers(self, gap_df: pd.DataFrame) -> int:
+        """
+        Calculate the actual unique number of customers affected by shortages
+        """
+        try:
+            # Check if we have the filtered demand data
+            if not hasattr(self, '_filtered_demand_df') or self._filtered_demand_df is None:
+                logger.warning("Filtered demand data not available, using approximation for affected customers")
+                return int(gap_df[gap_df['net_gap'] < 0].get('customer_count', pd.Series([0])).sum())
+            
+            # Get list of products/brands with shortage
+            shortage_df = gap_df[gap_df['net_gap'] < 0]
+            
+            if shortage_df.empty:
+                return 0
+            
+            # Determine what we're grouping by to filter demand correctly
+            if 'product_id' in shortage_df.columns:
+                # Product-level grouping
+                shortage_items = shortage_df['product_id'].unique().tolist()
+                affected_demand = self._filtered_demand_df[
+                    self._filtered_demand_df['product_id'].isin(shortage_items)
+                ]
+            elif 'brand' in shortage_df.columns and len(shortage_df.columns) <= 10:
+                # Brand-level grouping
+                shortage_brands = shortage_df['brand'].unique().tolist()
+                affected_demand = self._filtered_demand_df[
+                    self._filtered_demand_df['brand'].isin(shortage_brands)
+                ]
+            else:
+                # Unexpected structure
+                logger.warning("Unexpected GAP dataframe structure for customer calculation")
+                return int(gap_df[gap_df['net_gap'] < 0].get('customer_count', pd.Series([0])).sum())
+            
+            # Count unique customers from actual demand records
+            if 'customer' in affected_demand.columns:
+                unique_customers = affected_demand['customer'].nunique()
+            else:
+                logger.warning("Customer column not found in demand data")
+                return 0
+            
+            logger.info(f"Calculated {unique_customers} unique customers affected by {len(shortage_df)} shortage items")
+            
+            return int(unique_customers)
+            
+        except Exception as e:
+            logger.error(f"Error calculating unique affected customers: {e}", exc_info=True)
+            # Fallback to old method on error
+            return int(gap_df[gap_df['net_gap'] < 0].get('customer_count', pd.Series([0])).sum())
+    
     def get_summary_metrics(self, gap_df: pd.DataFrame) -> Dict[str, any]:
-        """Calculate summary metrics from GAP analysis"""
+        """
+        Calculate summary metrics from GAP analysis
+        """
         # Define status groups
         shortage_statuses = ['SEVERE_SHORTAGE', 'HIGH_SHORTAGE', 'MODERATE_SHORTAGE']
         critical_statuses = ['SEVERE_SHORTAGE', 'HIGH_SHORTAGE']
         surplus_statuses = ['SEVERE_SURPLUS', 'HIGH_SURPLUS', 'MODERATE_SURPLUS', 'LIGHT_SURPLUS']
+        
+        # Calculate unique affected customers
+        affected_customers = self._calculate_unique_affected_customers(gap_df)
         
         # Calculate metrics
         metrics = {
@@ -416,13 +506,22 @@ class GAPCalculator:
             'at_risk_value_usd': gap_df.get('at_risk_value_usd', pd.Series([0])).sum(),
             'gap_value_usd': gap_df.get('gap_value_usd', pd.Series([0])).sum(),
             
+            # Additional value metrics
+            'total_demand_value_usd': gap_df.get('demand_value_usd', pd.Series([0])).sum(),
+            'total_supply_value_usd': gap_df.get('supply_value_usd', pd.Series([0])).sum(),
+            
             # Customer impact
-            'affected_customers': int(gap_df[gap_df['net_gap'] < 0].get('customer_count', pd.Series([0])).sum()),
+            'affected_customers': affected_customers,
             
             # Urgency counts
             'overdue_items': int(gap_df.get('count_overdue', pd.Series([0])).sum()),
             'urgent_items': int(gap_df.get('count_urgent', pd.Series([0])).sum())
         }
+        
+        # Log summary for debugging
+        logger.info(f"Summary Metrics: {metrics['shortage_items']} shortage items, "
+                   f"{affected_customers} unique affected customers, "
+                   f"At-risk value: ${metrics['at_risk_value_usd']:,.2f}")
         
         return metrics
     

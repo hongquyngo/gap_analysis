@@ -1,8 +1,9 @@
 # utils/net_gap/charts.py
 
 """
-Visualization module for GAP Analysis System - Clean Version
-Provides chart components using Plotly
+Visualization module for GAP Analysis System - Updated Version
+- Removed Category references
+- Only supports Product and Brand grouping
 """
 
 import pandas as pd
@@ -69,12 +70,13 @@ class GAPCharts:
         """
         self.formatter = formatter
     
-    def create_kpi_cards(self, metrics: Dict[str, Any]) -> None:
+    def create_kpi_cards(self, metrics: Dict[str, Any], enable_customer_dialog: bool = True) -> None:
         """
         Create KPI cards using Streamlit columns
         
         Args:
             metrics: Dictionary of metrics from calculator
+            enable_customer_dialog: Whether to show customer dialog button
         """
         # First row - Main metrics
         col1, col2, col3, col4 = st.columns(4)
@@ -142,11 +144,29 @@ class GAPCharts:
             )
         
         with col4:
-            st.metric(
-                label="👥 Affected Customers",
-                value=self.formatter.format_number(metrics['affected_customers']),
-                help="Number of customers impacted by shortages"
-            )
+            # Affected Customers card with dialog button
+            affected_count = metrics['affected_customers']
+            
+            metric_container = st.container()
+            
+            with metric_container:
+                st.metric(
+                    label="👥 Affected Customers",
+                    value=self.formatter.format_number(affected_count),
+                    help="Number of unique customers impacted by shortages"
+                )
+                
+                # Add button to view details if there are affected customers
+                if enable_customer_dialog and affected_count > 0:
+                    if st.button(
+                        f"📋 View Details →",
+                        key="view_customer_details",
+                        type="primary",
+                        use_container_width=True,
+                        help=f"Click to see details of {affected_count} affected customers"
+                    ):
+                        st.session_state.show_customer_dialog = True
+                        st.rerun()
     
     def create_status_pie_chart(self, gap_df: pd.DataFrame) -> go.Figure:
         """
@@ -370,16 +390,17 @@ class GAPCharts:
     
     def create_gap_heatmap(self, gap_df: pd.DataFrame, group_by: str = 'brand') -> go.Figure:
         """
-        Create heatmap showing GAP by category/brand
+        Create heatmap showing GAP by brand
         
         Args:
             gap_df: DataFrame with GAP calculations
-            group_by: Grouping field (brand, category, etc.)
+            group_by: Grouping field (should be 'brand' only now)
             
         Returns:
             Plotly figure object
         """
-        if gap_df.empty or group_by not in gap_df.columns:
+        # Validate group_by - only brand makes sense for heatmap now
+        if group_by not in ['brand'] or group_by not in gap_df.columns:
             return self._create_empty_chart(f"Cannot create heatmap - '{group_by}' not available")
         
         # Prepare data for heatmap
@@ -487,7 +508,10 @@ class GAPCharts:
         return min(calculated_height, MAX_CHART_HEIGHT)
     
     def _prepare_display_names(self, df: pd.DataFrame) -> List[str]:
-        """Prepare display names for items"""
+        """
+        Prepare display names for items
+        REMOVED CATEGORY HANDLING
+        """
         if 'product_name' in df.columns and 'pt_code' in df.columns:
             return df.apply(
                 lambda x: f"{x['pt_code']} - {x['product_name'][:25]}{'...' if len(str(x['product_name'])) > 25 else ''}",
@@ -495,20 +519,21 @@ class GAPCharts:
             ).tolist()
         elif 'brand' in df.columns:
             return df['brand'].tolist()
-        elif 'category' in df.columns:
-            return df['category'].tolist()
         else:
+            # Default fallback
             return df.index.astype(str).tolist()
     
     def _prepare_short_names(self, df: pd.DataFrame) -> List[str]:
-        """Prepare short names for x-axis"""
+        """
+        Prepare short names for x-axis
+        REMOVED CATEGORY HANDLING
+        """
         if 'pt_code' in df.columns:
             return df['pt_code'].tolist()
         elif 'brand' in df.columns:
             return df['brand'].tolist()
-        elif 'category' in df.columns:
-            return df['category'].tolist()
         else:
+            # Default fallback
             return df.index.astype(str).tolist()
     
     def _get_gap_colorscale(self) -> List[List]:
