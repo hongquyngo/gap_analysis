@@ -21,29 +21,29 @@ DEFAULT_DATE_RANGE_DAYS = 30
 MAX_MULTISELECT_DISPLAY = 200
 
 QUICK_FILTER_OPTIONS = {
-    'all': '📋 All Items',
-    'shortage': '⚠️ Shortage Only',
-    'critical': '🚨 Critical Only',
-    'surplus': '📦 Surplus Only',
-    'balanced': '✅ Balanced Only'
+    'all': 'ðŸ“‹ All Items',
+    'shortage': 'âš ï¸ Shortage Only',
+    'critical': 'ðŸš¨ Critical Only',
+    'surplus': 'ðŸ“¦ Surplus Only',
+    'balanced': 'âœ… Balanced Only'
 }
 
 # REMOVED CATEGORY - Only Product and Brand
 GROUP_BY_OPTIONS = {
-    'product': '📦 Product',
-    'brand': '🏷️ Brand'
+    'product': 'ðŸ“¦ Product',
+    'brand': 'ðŸ·ï¸ Brand'
 }
 
 SUPPLY_SOURCES = {
-    'INVENTORY': '📦 Inventory (Available Now)',
-    'CAN_PENDING': '⏳ CAN Pending (1-3 days)',
-    'WAREHOUSE_TRANSFER': '🚚 Warehouse Transfer (2-5 days)',
-    'PURCHASE_ORDER': '📝 Purchase Order (7-30 days)'
+    'INVENTORY': 'ðŸ“¦ Inventory (Available Now)',
+    'CAN_PENDING': 'â³ CAN Pending (1-3 days)',
+    'WAREHOUSE_TRANSFER': 'ðŸšš Warehouse Transfer (2-5 days)',
+    'PURCHASE_ORDER': 'ðŸ“ Purchase Order (7-30 days)'
 }
 
 DEMAND_SOURCES = {
-    'OC_PENDING': '📋 Confirmed Orders (OC)',
-    'FORECAST': '📊 Customer Forecast'
+    'OC_PENDING': 'ðŸ“‹ Confirmed Orders (OC)',
+    'FORECAST': 'ðŸ“Š Customer Forecast'
 }
 
 
@@ -104,7 +104,7 @@ class GAPFilters:
         """
         filters = {}
         
-        with st.expander("🔍 **Filters & Settings**", expanded=True):
+        with st.expander("ðŸ” **Filters & Settings**", expanded=True):
             # Quick filters and grouping
             self._render_quick_controls(filters)
             st.divider()
@@ -174,7 +174,7 @@ class GAPFilters:
         
         with col2:
             date_from = st.date_input(
-                "📅 From Date",
+                "ðŸ“… From Date",
                 value=current_range[0],
                 max_value=date.today() + timedelta(days=365),
                 help="Start date for analysis"
@@ -182,7 +182,7 @@ class GAPFilters:
         
         with col3:
             date_to = st.date_input(
-                "📅 To Date",
+                "ðŸ“… To Date",
                 value=current_range[1],
                 min_value=date_from,
                 max_value=date.today() + timedelta(days=365),
@@ -193,18 +193,18 @@ class GAPFilters:
         
         # Show date range info
         days_diff = (date_to - date_from).days
-        st.caption(f"📅 Date range: {days_diff} days selected")
+        st.caption(f"ðŸ“… Date range: {days_diff} days selected")
     
     def _render_source_selection(self, filters: Dict[str, Any]) -> None:
         """Render supply and demand source selection"""
         col1, col2 = st.columns(2)
         
         with col1:
-            st.subheader("📦 Supply Sources")
+            st.subheader("ðŸ“¦ Supply Sources")
             filters['supply_sources'] = self._render_supply_sources()
         
         with col2:
-            st.subheader("📋 Demand Sources")
+            st.subheader("ðŸ“‹ Demand Sources")
             filters['demand_sources'] = self._render_demand_sources()
     
     def _render_supply_sources(self) -> List[str]:
@@ -222,7 +222,7 @@ class GAPFilters:
                     selected.append(source)
         
         if not selected:
-            st.warning("⚠️ Select at least one supply source")
+            st.warning("âš ï¸ Select at least one supply source")
             return ['INVENTORY']  # Default fallback
         
         return selected
@@ -237,7 +237,7 @@ class GAPFilters:
                 selected.append(source)
         
         if not selected:
-            st.warning("⚠️ Select at least one demand source")
+            st.warning("âš ï¸ Select at least one demand source")
             return ['OC_PENDING']  # Default fallback
         
         return selected
@@ -247,15 +247,15 @@ class GAPFilters:
         col1, col2, col3 = st.columns([2, 1, 2])
         
         with col1:
-            st.subheader("🔍 Product Selection")
+            st.subheader("ðŸ” Product Selection")
             filters['products'] = self._render_product_multiselect(filters.get('entity'))
         
         with col2:
-            st.subheader("🏷️ Brands")
+            st.subheader("ðŸ·ï¸ Brands")
             filters['brands'] = self._render_brand_selector(filters.get('entity'))
         
         with col3:
-            st.subheader("🏢 Customers")
+            st.subheader("ðŸ¢ Customers")
             filters['customers'] = self._render_customer_multiselect(filters.get('entity'))
     
     def _render_entity_filter(self) -> Optional[str]:
@@ -275,7 +275,7 @@ class GAPFilters:
             default_index = 0
         
         selected = st.selectbox(
-            "🏢 Entity",
+            "ðŸ¢ Entity",
             options=entity_options,
             index=default_index,
             help="Select entity to analyze"
@@ -313,7 +313,7 @@ class GAPFilters:
         
         # Show count
         if selected:
-            st.caption(f"✓ {len(selected)} products selected")
+            st.caption(f"âœ“ {len(selected)} products selected")
         else:
             st.caption("All products selected")
         
@@ -357,7 +357,7 @@ class GAPFilters:
         
         # Show count
         if selected:
-            st.caption(f"✓ {len(selected)} customers selected")
+            st.caption(f"âœ“ {len(selected)} customers selected")
         
         return selected
     
@@ -366,18 +366,18 @@ class GAPFilters:
         col1, col2, col3 = st.columns([1, 1, 2])
         
         with col1:
-            if st.button("🔄 Reset Filters", use_container_width=True):
+            if st.button("ðŸ”„ Reset Filters", use_container_width=True):
                 st.session_state.gap_filters = self._get_default_filters()
                 st.rerun()
         
         with col2:
-            if st.button("📊 Apply Filters", type="primary", use_container_width=True):
+            if st.button("ðŸ“Š Apply Filters", type="primary", use_container_width=True):
                 st.rerun()
         
         with col3:
             active_count = self._count_active_filters(filters)
             if active_count > 0:
-                st.info(f"✔ {active_count} filters active")
+                st.info(f"âœ” {active_count} filters active")
     
     def _count_active_filters(self, filters: Dict[str, Any]) -> int:
         """Count number of active (non-default) filters"""

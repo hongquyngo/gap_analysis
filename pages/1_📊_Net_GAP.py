@@ -1,4 +1,4 @@
-# pages/1_📊_Net_GAP.py
+# pages/1_ðŸ“Š_Net_GAP.py
 
 """
 Net GAP Analysis Page - Version 3.0
@@ -22,7 +22,7 @@ from pathlib import Path
 # Configure page
 st.set_page_config(
     page_title="Net GAP Analysis",
-    page_icon="📊",
+    page_icon="ðŸ“Š",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
@@ -91,13 +91,13 @@ def handle_error(e: Exception) -> None:
     logger.error(f"Error in Net GAP analysis: {e}", exc_info=True)
     
     if "connection" in error_msg or "connect" in error_msg:
-        st.error("🔌 Database connection issue. Please refresh the page and try again.")
+        st.error("ðŸ”Œ Database connection issue. Please refresh the page and try again.")
     elif "permission" in error_msg or "denied" in error_msg:
-        st.error("🔒 Access denied. Please check your permissions.")
+        st.error("ðŸ”’ Access denied. Please check your permissions.")
     elif "timeout" in error_msg:
-        st.error("⏱️ Request timed out. Try using more specific filters.")
+        st.error("â±ï¸ Request timed out. Try using more specific filters.")
     else:
-        st.error(f"❌ An error occurred: {error_type}")
+        st.error(f"âŒ An error occurred: {error_type}")
     
     with st.expander("Error Details", expanded=False):
         st.code(str(e))
@@ -118,7 +118,7 @@ def export_to_excel(gap_df: pd.DataFrame, metrics: Dict, filters: Dict) -> bytes
     
     # Check data size
     if len(gap_df) > MAX_EXPORT_ROWS:
-        st.warning(f"⚠️ Large dataset ({len(gap_df)} rows). Export limited to {MAX_EXPORT_ROWS} rows.")
+        st.warning(f"âš ï¸ Large dataset ({len(gap_df)} rows). Export limited to {MAX_EXPORT_ROWS} rows.")
         gap_df = gap_df.head(MAX_EXPORT_ROWS)
     
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -217,18 +217,18 @@ def prepare_display_dataframe(gap_df: pd.DataFrame, filter_values: Dict,
     
     # Status mapping
     status_display = {
-        'NO_DEMAND': '⚪ No Demand',
-        'SEVERE_SHORTAGE': '🔴 Severe Shortage',
-        'HIGH_SHORTAGE': '🟠 High Shortage',
-        'MODERATE_SHORTAGE': '🟡 Moderate Shortage',
-        'BALANCED': '✅ Balanced',
-        'LIGHT_SURPLUS': '🔵 Light Surplus',
-        'MODERATE_SURPLUS': '🟣 Moderate Surplus',
-        'HIGH_SURPLUS': '🟠 High Surplus',
-        'SEVERE_SURPLUS': '🔴 Severe Surplus'
+        'NO_DEMAND': 'âšª No Demand',
+        'SEVERE_SHORTAGE': 'ðŸ”´ Severe Shortage',
+        'HIGH_SHORTAGE': 'ðŸŸ  High Shortage',
+        'MODERATE_SHORTAGE': 'ðŸŸ¡ Moderate Shortage',
+        'BALANCED': 'âœ… Balanced',
+        'LIGHT_SURPLUS': 'ðŸ”µ Light Surplus',
+        'MODERATE_SURPLUS': 'ðŸŸ£ Moderate Surplus',
+        'HIGH_SURPLUS': 'ðŸŸ  High Surplus',
+        'SEVERE_SURPLUS': 'ðŸ”´ Severe Surplus'
     }
     
-    display_df['Status'] = display_df['gap_status'].map(status_display).fillna('❓ Unknown')
+    display_df['Status'] = display_df['gap_status'].map(status_display).fillna('â“ Unknown')
     
     # Format numeric columns
     format_columns = {
@@ -290,13 +290,13 @@ def display_paginated_table(df: pd.DataFrame, items_per_page: int) -> None:
         col1, col2, col3, col4, col5 = st.columns([1, 1, 3, 1, 1])
         
         with col1:
-            if st.button("◀◀", disabled=(page == 1), use_container_width=True, 
+            if st.button("â—€â—€", disabled=(page == 1), use_container_width=True, 
                         help="First page"):
                 st.session_state.current_page = 1
                 st.rerun()
         
         with col2:
-            if st.button("◀", disabled=(page == 1), use_container_width=True,
+            if st.button("â—€", disabled=(page == 1), use_container_width=True,
                         help="Previous page"):
                 st.session_state.current_page = page - 1
                 st.rerun()
@@ -310,13 +310,13 @@ def display_paginated_table(df: pd.DataFrame, items_per_page: int) -> None:
             )
         
         with col4:
-            if st.button("▶", disabled=(page == total_pages), use_container_width=True,
+            if st.button("â–¶", disabled=(page == total_pages), use_container_width=True,
                         help="Next page"):
                 st.session_state.current_page = page + 1
                 st.rerun()
         
         with col5:
-            if st.button("▶▶", disabled=(page == total_pages), use_container_width=True,
+            if st.button("â–¶â–¶", disabled=(page == total_pages), use_container_width=True,
                         help="Last page"):
                 st.session_state.current_page = total_pages
                 st.rerun()
@@ -358,7 +358,7 @@ def display_data_table(gap_df: pd.DataFrame, filter_values: Dict,
     col1, col2, col3 = st.columns([2, 1, 1])
     
     with col1:
-        search_term = st.text_input("🔍 Search in results", placeholder="Type to filter...")
+        search_term = st.text_input("ðŸ” Search in results", placeholder="Type to filter...")
         if search_term:
             mask = display_df.astype(str).apply(
                 lambda x: x.str.contains(search_term, case=False, na=False)
@@ -369,17 +369,17 @@ def display_data_table(gap_df: pd.DataFrame, filter_values: Dict,
         items_per_page = st.selectbox("Items per page", [10, 25, 50, 100], index=1)
     
     with col3:
-        if st.button("📥 Export to Excel", type="primary", use_container_width=True):
+        if st.button("ðŸ“¥ Export to Excel", type="primary", use_container_width=True):
             excel_data = export_to_excel(gap_df, metrics, filter_values)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             
             st.download_button(
-                label="📥 Download Excel File",
+                label="ðŸ“¥ Download Excel File",
                 data=excel_data,
                 file_name=f"gap_analysis_{timestamp}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
-            st.success("✅ Export prepared successfully!")
+            st.success("âœ… Export prepared successfully!")
     
     # Display paginated table
     display_paginated_table(display_df, items_per_page)
@@ -391,7 +391,7 @@ def main():
     
     # Check authentication
     if not auth_manager.check_session():
-        st.warning("⚠️ Please login to access this page")
+        st.warning("âš ï¸ Please login to access this page")
         st.stop()
     
     # Initialize session state for dialog
@@ -402,12 +402,12 @@ def main():
     data_loader, calculator, formatter, filters, charts, customer_dialog = initialize_components()
     
     # Page header
-    st.title("📊 Net GAP Analysis")
+    st.title("ðŸ“Š Net GAP Analysis")
     st.markdown("Quick overview of total supply vs demand balance. Select sources to customize your analysis.")
     
     # User info in sidebar
-    st.sidebar.markdown(f"👤 **User:** {auth_manager.get_user_display_name()}")
-    if st.sidebar.button("🚪 Logout", use_container_width=True):
+    st.sidebar.markdown(f"ðŸ‘¤ **User:** {auth_manager.get_user_display_name()}")
+    if st.sidebar.button("ðŸšª Logout", use_container_width=True):
         auth_manager.logout()
         st.rerun()
     
@@ -442,7 +442,7 @@ def main():
         
         load_time = time.time() - start_time
         if load_time > DATA_LOAD_WARNING_SECONDS:
-            st.info(f"⏱️ Data loading took {load_time:.1f} seconds. Consider using more specific filters.")
+            st.info(f"â±ï¸ Data loading took {load_time:.1f} seconds. Consider using more specific filters.")
         
         # Validate data
         if not validate_data(supply_df, 'supply') or not validate_data(demand_df, 'demand'):
@@ -490,7 +490,7 @@ def main():
         """)
         
         # Display KPI cards with customer dialog button enabled for product-level
-        st.subheader("📈 Key Metrics")
+        st.subheader("ðŸ“ˆ Key Metrics")
         charts.create_kpi_cards(
             metrics, 
             enable_customer_dialog=(filter_values.get('group_by') == 'product')
@@ -499,13 +499,13 @@ def main():
         st.divider()
         
         # Visualizations
-        st.subheader("📊 Visual Analysis")
+        st.subheader("ðŸ“Š Visual Analysis")
         display_visualizations(gap_df_filtered, filter_values, charts)
         
         st.divider()
         
         # Detailed data table
-        st.subheader("📋 Detailed GAP Analysis")
+        st.subheader("ðŸ“‹ Detailed GAP Analysis")
         display_data_table(gap_df_filtered, filter_values, formatter, metrics)
         
     except Exception as e:
