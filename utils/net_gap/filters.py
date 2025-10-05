@@ -1,17 +1,21 @@
 # utils/net_gap/filters.py
 
 """
-Filter components module for GAP Analysis System - Version 2.0
-- Simplified single-phase filtering
-- Added safety stock toggle
+Filter components module for GAP Analysis System - Version 2.1 (Refactored)
+- Integrated with SessionStateManager for centralized state management
+- Converts lists to tuples for stable cache keys
+- Improved validation and error handling
 - Context-aware quick filters
 """
 
 import streamlit as st
 import pandas as pd
 from datetime import datetime, date, timedelta
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 import logging
+
+from .session_manager import get_session_manager
+from .data_loader import DataLoadError, ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +23,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_DATE_RANGE_DAYS = 30
 MAX_MULTISELECT_DISPLAY = 200
 
-# Dynamic quick filter options (will adapt based on safety stock)
+# Quick filter options (adapt based on safety stock)
 QUICK_FILTER_BASE = {
     'all': 'All Items',
     'shortage': 'Shortage',
@@ -56,53 +60,36 @@ DEMAND_SOURCES = {
 
 
 class GAPFilters:
-    """Manages filter UI components for GAP analysis with safety stock support"""
+    """Manages filter UI components for GAP analysis with SessionStateManager integration"""
     
     def __init__(self, data_loader):
         """
-        Initialize filters with data loader
+        Initialize filters with data loader and session manager
         
         Args:
             data_loader: Instance of GAPDataLoader for fetching reference data
         """
         self.data_loader = data_loader
+        self.session_manager = get_session_manager()
         self._safety_stock_available = False
-        self._initialize_session_state()
         self._check_safety_stock_availability()
     
-    def _initialize_session_state(self):
-        """Initialize session state for filter persistence"""
-        if 'gap_filters' not in st.session_state:
-            st.session_state.gap_filters = self._get_default_filters()
-    
-    def _check_safety_stock_availability(self):
+    def _check_safety_stock_availability(self) -> None:
         """Check if safety stock data is available"""
         try:
             self._safety_stock_available = self.data_loader.check_safety_stock_availability()
+            logger.info(f"Safety stock available: {self._safety_stock_available}")
         except Exception as e:
             logger.warning(f"Could not check safety stock availability: {e}")
             self._safety_stock_available = False
     
-    def _get_default_filters(self) -> Dict[str, Any]:
-        """Get default filter values with auto date range"""
-        # Get date range from data
-        date_range = self._get_data_date_range()
+    def _get_data_date_range(self) -> Tuple[date, date]:
+        """
+        Get min/max dates from supply and demand data
         
-        return {
-            'entity': None,
-            'date_range': date_range,
-            'products': [],
-            'brands': [],
-            'customers': [],
-            'quick_filter': 'all',
-            'group_by': 'product',
-            'supply_sources': list(SUPPLY_SOURCES.keys()),
-            'demand_sources': ['OC_PENDING'],  # Only OC by default, no FORECAST
-            'include_safety_stock': True  # Default to include safety stock
-        }
-    
-    def _get_data_date_range(self) -> tuple:
-        """Get min/max dates from supply and demand data"""
+        Returns:
+            Tuple of (min_date, max_date)
+        """
         try:
             date_info = self.data_loader.get_date_range()
             if date_info and 'min_date' in date_info and 'max_date' in date_info:
@@ -118,7 +105,7 @@ class GAPFilters:
         Render all filter components in a single, streamlined interface
         
         Returns:
-            Dictionary containing all filter selections
+            Dictionary containing all filter selections with tuples for cache stability
         """
         filters = {}
         
@@ -142,8 +129,8 @@ class GAPFilters:
             self._render_analysis_options(filters)
         
         # Validate and save to session state
-        filters = self._validate_filters(filters)
-        st.session_state.gap_filters = filters
+        filters = self._validate_and_convert_filters(filters)
+        self.session_manager.set_filters(filters)
         
         return filters
     
@@ -154,15 +141,17 @@ class GAPFilters:
         with col1:
             filters['entity'] = self._render_entity_filter()
         
-        # Get current or default date range
-        current_range = st.session_state.gap_filters.get('date_range', self._get_data_date_range())
+        # Get current date range from session
+        current_filters = self.session_manager.get_filters()
+        current_range = current_filters.get('date_range', self._get_data_date_range())
         
         with col2:
             date_from = st.date_input(
                 "From Date",
                 value=current_range[0],
                 max_value=date.today() + timedelta(days=365),
-                help="Start date for analysis"
+                help="Start date for analysis",
+                key="filter_date_from"
             )
         
         with col3:
@@ -171,7 +160,8 @@ class GAPFilters:
                 value=current_range[1],
                 min_value=date_from,
                 max_value=date.today() + timedelta(days=365),
-                help="End date for analysis"
+                help="End date for analysis",
+                key="filter_date_to"
             )
         
         filters['date_range'] = (date_from, date_to)
@@ -194,11 +184,12 @@ class GAPFilters:
         
         with col3:
             st.markdown("**Safety Stock**")
-            # Show safety stock toggle if available
+            current_filters = self.session_manager.get_filters()
+            
             if self._safety_stock_available:
                 filters['include_safety_stock'] = st.checkbox(
                     "Include Safety",
-                    value=st.session_state.gap_filters.get('include_safety_stock', True),  # Default True
+                    value=current_filters.get('include_safety_stock', True),
                     help="Consider safety stock requirements in GAP calculation",
                     key="safety_toggle"
                 )
@@ -212,7 +203,8 @@ class GAPFilters:
     def _render_supply_sources(self) -> List[str]:
         """Render supply source checkboxes"""
         selected = []
-        default_selected = st.session_state.gap_filters.get('supply_sources', list(SUPPLY_SOURCES.keys()))
+        current_filters = self.session_manager.get_filters()
+        default_selected = current_filters.get('supply_sources', list(SUPPLY_SOURCES.keys()))
         
         # Compact two-column layout
         col1, col2 = st.columns(2)
@@ -220,14 +212,17 @@ class GAPFilters:
         for idx, (source, label) in enumerate(SUPPLY_SOURCES.items()):
             col = col1 if idx < 2 else col2
             with col:
-                # Shorter labels for compact display
                 short_label = label.split('(')[0].strip()
-                if st.checkbox(short_label, value=source in default_selected, 
-                              key=f"supply_{source}", help=label):
+                if st.checkbox(
+                    short_label, 
+                    value=source in default_selected, 
+                    key=f"supply_{source}", 
+                    help=label
+                ):
                     selected.append(source)
         
         if not selected:
-            st.warning("Select at least one supply source")
+            st.warning("⚠️ Select at least one supply source")
             return ['INVENTORY']
         
         return selected
@@ -235,16 +230,21 @@ class GAPFilters:
     def _render_demand_sources(self) -> List[str]:
         """Render demand source checkboxes"""
         selected = []
-        default_selected = st.session_state.gap_filters.get('demand_sources', list(DEMAND_SOURCES.keys()))
+        current_filters = self.session_manager.get_filters()
+        default_selected = current_filters.get('demand_sources', ['OC_PENDING'])
         
         for source, label in DEMAND_SOURCES.items():
             short_label = label.split('(')[0].strip()
-            if st.checkbox(short_label, value=source in default_selected, 
-                          key=f"demand_{source}", help=label):
+            if st.checkbox(
+                short_label, 
+                value=source in default_selected, 
+                key=f"demand_{source}", 
+                help=label
+            ):
                 selected.append(source)
         
         if not selected:
-            st.warning("Select at least one demand source")
+            st.warning("⚠️ Select at least one demand source")
             return ['OC_PENDING']
         
         return selected
@@ -271,44 +271,66 @@ class GAPFilters:
         
         with col1:
             st.markdown("**Quick Filter**")
+            current_filters = self.session_manager.get_filters()
+            
             # Use appropriate filter options based on safety stock
             if filters.get('include_safety_stock', False):
                 filter_options = QUICK_FILTER_SAFETY
             else:
                 filter_options = QUICK_FILTER_BASE
             
+            # Get current selection index
+            current_quick_filter = current_filters.get('quick_filter', 'all')
+            try:
+                current_index = list(filter_options.keys()).index(current_quick_filter)
+            except ValueError:
+                current_index = 0
+            
             filters['quick_filter'] = st.radio(
                 "Quick filter",
                 options=list(filter_options.keys()),
                 format_func=lambda x: f"🔍 {filter_options[x]}",
-                index=0,  # Default to 'all'
+                index=current_index,
                 horizontal=True,
-                label_visibility="collapsed"
+                label_visibility="collapsed",
+                key="quick_filter_radio"
             )
         
         with col2:
             st.markdown("**Group By**")
+            current_filters = self.session_manager.get_filters()
+            current_group_by = current_filters.get('group_by', 'product')
+            
+            try:
+                group_by_index = list(GROUP_BY_OPTIONS.keys()).index(current_group_by)
+            except ValueError:
+                group_by_index = 0
+            
             filters['group_by'] = st.radio(
                 "Group by",
                 options=list(GROUP_BY_OPTIONS.keys()),
                 format_func=lambda x: f"📊 {GROUP_BY_OPTIONS[x]}",
-                index=list(GROUP_BY_OPTIONS.keys()).index(
-                    st.session_state.gap_filters.get('group_by', 'product')
-                ),
+                index=group_by_index,
                 horizontal=True,
-                label_visibility="collapsed"
+                label_visibility="collapsed",
+                key="group_by_radio"
             )
     
     def _render_entity_filter(self) -> Optional[str]:
-        """Render entity selection filter"""
-        entities = self.data_loader.get_entities()
+        """Render entity selection filter with error handling"""
+        try:
+            entities = self.data_loader.get_entities()
+        except DataLoadError as e:
+            st.error(f"Failed to load entities: {str(e)}")
+            return None
         
         if not entities:
             st.warning("No entities available")
             return None
         
         entity_options = ["All Entities"] + entities
-        current_value = st.session_state.gap_filters.get('entity')
+        current_filters = self.session_manager.get_filters()
+        current_value = current_filters.get('entity')
         
         if current_value and current_value in entities:
             default_index = entities.index(current_value) + 1
@@ -319,14 +341,19 @@ class GAPFilters:
             "Entity",
             options=entity_options,
             index=default_index,
-            help="Select entity to analyze"
+            help="Select entity to analyze",
+            key="entity_select"
         )
         
         return None if selected == "All Entities" else selected
     
     def _render_product_multiselect(self, entity: Optional[str]) -> List[int]:
-        """Render product selection as multiselect"""
-        products_df = self.data_loader.get_products(entity)
+        """Render product selection as multiselect with error handling"""
+        try:
+            products_df = self.data_loader.get_products(entity)
+        except (DataLoadError, ValidationError) as e:
+            st.error(f"Failed to load products: {str(e)}")
+            return []
         
         if products_df.empty:
             st.info("No products available")
@@ -338,16 +365,22 @@ class GAPFilters:
             axis=1
         )
         
-        selected_products = st.session_state.gap_filters.get('products', [])
+        current_filters = self.session_manager.get_filters()
+        selected_products = current_filters.get('products', [])
+        
+        # Ensure selected products exist in current product list
+        valid_selected = [p for p in selected_products if p in products_df['product_id'].tolist()]
         
         selected = st.multiselect(
             "Select products",
             options=products_df['product_id'].tolist(),
-            default=[p for p in selected_products if p in products_df['product_id'].tolist()],
-            format_func=lambda x: products_df[products_df['product_id'] == x]['display_name'].iloc[0],
+            default=valid_selected,
+            format_func=lambda x: products_df[products_df['product_id'] == x]['display_name'].iloc[0]
+                if x in products_df['product_id'].values else str(x),
             placeholder="All products",
             label_visibility="collapsed",
-            help="Leave empty for all products"
+            help="Leave empty for all products",
+            key="products_multiselect"
         )
         
         if selected:
@@ -356,23 +389,38 @@ class GAPFilters:
         return selected
     
     def _render_brand_selector(self, entity: Optional[str]) -> List[str]:
-        """Render brand selection"""
-        brands = self.data_loader.get_brands(entity)
+        """Render brand selection with error handling"""
+        try:
+            brands = self.data_loader.get_brands(entity)
+        except (DataLoadError, ValidationError) as e:
+            st.error(f"Failed to load brands: {str(e)}")
+            return []
         
         if not brands:
             return []
         
+        current_filters = self.session_manager.get_filters()
+        selected_brands = current_filters.get('brands', [])
+        
+        # Ensure selected brands exist in current brand list
+        valid_selected = [b for b in selected_brands if b in brands]
+        
         return st.multiselect(
             "Select brands",
             options=brands,
-            default=st.session_state.gap_filters.get('brands', []),
+            default=valid_selected,
             label_visibility="collapsed",
-            placeholder="All brands"
+            placeholder="All brands",
+            key="brands_multiselect"
         )
     
     def _render_customer_multiselect(self, entity: Optional[str]) -> List[str]:
-        """Render customer selection"""
-        customers = self.data_loader.get_customers(entity)
+        """Render customer selection with error handling"""
+        try:
+            customers = self.data_loader.get_customers(entity)
+        except (DataLoadError, ValidationError) as e:
+            st.error(f"Failed to load customers: {str(e)}")
+            return []
         
         if not customers:
             return []
@@ -382,12 +430,19 @@ class GAPFilters:
             st.info(f"Showing first {MAX_MULTISELECT_DISPLAY} customers")
             customers = customers[:MAX_MULTISELECT_DISPLAY]
         
+        current_filters = self.session_manager.get_filters()
+        selected_customers = current_filters.get('customers', [])
+        
+        # Ensure selected customers exist in current customer list
+        valid_selected = [c for c in selected_customers if c in customers]
+        
         selected = st.multiselect(
             "Select customers",
             options=customers,
-            default=st.session_state.gap_filters.get('customers', []),
+            default=valid_selected,
             label_visibility="collapsed",
-            placeholder="All customers"
+            placeholder="All customers",
+            key="customers_multiselect"
         )
         
         if selected:
@@ -395,10 +450,19 @@ class GAPFilters:
         
         return selected
     
-    def _validate_filters(self, filters: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate and clean filter values"""
+    def _validate_and_convert_filters(self, filters: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Validate and convert filter values (lists to tuples for cache stability)
+        
+        Args:
+            filters: Raw filter dictionary
+            
+        Returns:
+            Validated and converted filter dictionary
+        """
         # Ensure group_by is valid
         if filters.get('group_by') not in ['product', 'brand']:
+            logger.warning(f"Invalid group_by: {filters.get('group_by')}, defaulting to 'product'")
             filters['group_by'] = 'product'
         
         # Ensure quick_filter is valid
@@ -407,18 +471,49 @@ class GAPFilters:
             valid_quick_filters.append('reorder')
         
         if filters.get('quick_filter') not in valid_quick_filters:
+            logger.warning(f"Invalid quick_filter: {filters.get('quick_filter')}, defaulting to 'all'")
             filters['quick_filter'] = 'all'
         
         # Ensure at least one source is selected
         if not filters.get('supply_sources'):
+            logger.warning("No supply sources selected, defaulting to INVENTORY")
             filters['supply_sources'] = ['INVENTORY']
         if not filters.get('demand_sources'):
+            logger.warning("No demand sources selected, defaulting to OC_PENDING")
             filters['demand_sources'] = ['OC_PENDING']
         
-        return filters
+        # Convert lists to tuples for stable cache keys
+        # This is critical for proper caching in data_loader
+        filters_converted = filters.copy()
+        
+        if filters.get('products'):
+            filters_converted['products_tuple'] = tuple(filters['products'])
+        else:
+            filters_converted['products_tuple'] = None
+        
+        if filters.get('brands'):
+            filters_converted['brands_tuple'] = tuple(filters['brands'])
+        else:
+            filters_converted['brands_tuple'] = None
+        
+        if filters.get('customers'):
+            filters_converted['customers_tuple'] = tuple(filters['customers'])
+        else:
+            filters_converted['customers_tuple'] = None
+        
+        # Keep original lists for UI display
+        filters_converted['products'] = filters.get('products', [])
+        filters_converted['brands'] = filters.get('brands', [])
+        filters_converted['customers'] = filters.get('customers', [])
+        
+        return filters_converted
     
-    def apply_quick_filter(self, gap_df: pd.DataFrame, quick_filter: str, 
-                          include_safety: bool = False) -> pd.DataFrame:
+    def apply_quick_filter(
+        self, 
+        gap_df: pd.DataFrame, 
+        quick_filter: str, 
+        include_safety: bool = False
+    ) -> pd.DataFrame:
         """
         Apply quick filter preset to GAP dataframe
         Context-aware based on safety stock inclusion
@@ -436,34 +531,51 @@ class GAPFilters:
         
         # Define filter mappings based on safety stock context
         if include_safety:
-            # Safety-aware filter mappings
             filter_mappings = {
-                'shortage': ['SEVERE_SHORTAGE', 'HIGH_SHORTAGE', 'MODERATE_SHORTAGE', 
-                           'BELOW_SAFETY', 'CRITICAL_BREACH'],
-                'critical': ['SEVERE_SHORTAGE', 'HIGH_SHORTAGE', 'CRITICAL_BREACH', 
-                           'BELOW_SAFETY', 'HAS_EXPIRED'],
-                'surplus': ['SEVERE_SURPLUS', 'HIGH_SURPLUS', 'MODERATE_SURPLUS', 
-                          'LIGHT_SURPLUS'],
+                'shortage': [
+                    'SEVERE_SHORTAGE', 'HIGH_SHORTAGE', 'MODERATE_SHORTAGE', 
+                    'BELOW_SAFETY', 'CRITICAL_BREACH'
+                ],
+                'critical': [
+                    'SEVERE_SHORTAGE', 'HIGH_SHORTAGE', 'CRITICAL_BREACH', 
+                    'BELOW_SAFETY', 'HAS_EXPIRED'
+                ],
+                'surplus': [
+                    'SEVERE_SURPLUS', 'HIGH_SURPLUS', 'MODERATE_SURPLUS', 
+                    'LIGHT_SURPLUS'
+                ],
                 'balanced': ['BALANCED'],
                 'reorder': ['AT_REORDER', 'BELOW_SAFETY', 'CRITICAL_BREACH']
             }
         else:
-            # Traditional filter mappings
             filter_mappings = {
                 'shortage': ['SEVERE_SHORTAGE', 'HIGH_SHORTAGE', 'MODERATE_SHORTAGE'],
                 'critical': ['SEVERE_SHORTAGE', 'HIGH_SHORTAGE'],
-                'surplus': ['SEVERE_SURPLUS', 'HIGH_SURPLUS', 'MODERATE_SURPLUS', 
-                          'LIGHT_SURPLUS'],
+                'surplus': [
+                    'SEVERE_SURPLUS', 'HIGH_SURPLUS', 'MODERATE_SURPLUS', 
+                    'LIGHT_SURPLUS'
+                ],
                 'balanced': ['BALANCED']
             }
         
         if quick_filter in filter_mappings:
-            return gap_df[gap_df['gap_status'].isin(filter_mappings[quick_filter])]
+            filtered = gap_df[gap_df['gap_status'].isin(filter_mappings[quick_filter])]
+            logger.debug(f"Applied quick filter '{quick_filter}': {len(gap_df)} -> {len(filtered)} rows")
+            return filtered
         
+        logger.warning(f"Unknown quick filter: {quick_filter}")
         return gap_df
     
     def get_filter_summary(self, filters: Dict[str, Any]) -> str:
-        """Generate a human-readable summary of active filters"""
+        """
+        Generate a human-readable summary of active filters
+        
+        Args:
+            filters: Filter dictionary
+            
+        Returns:
+            Summary string
+        """
         summary_parts = []
         
         # Entity
@@ -499,52 +611,34 @@ class GAPFilters:
         # Quick filter
         if filters.get('quick_filter') != 'all':
             if filters.get('include_safety_stock'):
-                filter_name = QUICK_FILTER_SAFETY[filters['quick_filter']]
+                filter_name = QUICK_FILTER_SAFETY.get(filters['quick_filter'], filters['quick_filter'])
             else:
-                filter_name = QUICK_FILTER_BASE[filters['quick_filter']]
+                filter_name = QUICK_FILTER_BASE.get(filters['quick_filter'], filters['quick_filter'])
             summary_parts.append(f"Filter: {filter_name}")
         
         # Grouping
-        summary_parts.append(f"By: {GROUP_BY_OPTIONS[filters.get('group_by', 'product')]}")
+        group_by_name = GROUP_BY_OPTIONS.get(filters.get('group_by', 'product'), 'Product')
+        summary_parts.append(f"By: {group_by_name}")
         
         return " | ".join(summary_parts) if summary_parts else "No filters applied"
     
-    def render_action_buttons(self) -> tuple[bool, bool]:
+    def count_active_filters(self, filters: Optional[Dict[str, Any]] = None) -> int:
         """
-        Render action buttons for filter operations
+        Count number of active (non-default) filters
         
+        Args:
+            filters: Optional filter dict, uses session state if not provided
+            
         Returns:
-            Tuple of (reset_clicked, apply_clicked)
+            Number of active filters
         """
-        col1, col2, col3 = st.columns([1, 1, 2])
+        if filters is None:
+            filters = self.session_manager.get_filters()
         
-        reset_clicked = False
-        apply_clicked = False
-        
-        with col1:
-            if st.button("🔄 Reset", use_container_width=True, help="Reset all filters"):
-                st.session_state.gap_filters = self._get_default_filters()
-                reset_clicked = True
-        
-        with col2:
-            if st.button("📊 Calculate GAP", type="primary", use_container_width=True):
-                apply_clicked = True
-        
-        with col3:
-            # Show filter count
-            active_count = self._count_active_filters(st.session_state.gap_filters)
-            if active_count > 0:
-                st.success(f"✓ {active_count} filters active")
-        
-        return reset_clicked, apply_clicked
-    
-    def _count_active_filters(self, filters: Dict[str, Any]) -> int:
-        """Count number of active (non-default) filters"""
         count = 0
-        defaults = self._get_default_filters()
         
         # Check each filter against defaults
-        if filters.get('entity') != defaults['entity']:
+        if filters.get('entity'):
             count += 1
         if filters.get('products'):
             count += 1
@@ -552,13 +646,18 @@ class GAPFilters:
             count += 1
         if filters.get('customers'):
             count += 1
-        if filters.get('quick_filter') != defaults['quick_filter']:
+        if filters.get('quick_filter') != 'all':
             count += 1
-        if filters.get('include_safety_stock', False):
+        if filters.get('include_safety_stock'):
             count += 1
-        if set(filters.get('supply_sources', [])) != set(defaults['supply_sources']):
+        
+        # Check if sources differ from defaults
+        default_supply = list(SUPPLY_SOURCES.keys())
+        default_demand = ['OC_PENDING']
+        
+        if set(filters.get('supply_sources', [])) != set(default_supply):
             count += 1
-        if set(filters.get('demand_sources', [])) != set(defaults['demand_sources']):
+        if set(filters.get('demand_sources', [])) != set(default_demand):
             count += 1
         
         return count
