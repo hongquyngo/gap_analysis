@@ -97,8 +97,8 @@ class GAPFilters:
             'quick_filter': 'all',
             'group_by': 'product',
             'supply_sources': list(SUPPLY_SOURCES.keys()),
-            'demand_sources': list(DEMAND_SOURCES.keys()),
-            'include_safety_stock': False  # NEW: Safety stock toggle
+            'demand_sources': ['OC_PENDING'],  # Only OC by default, no FORECAST
+            'include_safety_stock': True  # Default to include safety stock
         }
     
     def _get_data_date_range(self) -> tuple:
@@ -198,7 +198,7 @@ class GAPFilters:
             if self._safety_stock_available:
                 filters['include_safety_stock'] = st.checkbox(
                     "Include Safety",
-                    value=st.session_state.gap_filters.get('include_safety_stock', False),
+                    value=st.session_state.gap_filters.get('include_safety_stock', True),  # Default True
                     help="Consider safety stock requirements in GAP calculation",
                     key="safety_toggle"
                 )

@@ -13,7 +13,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, date, timedelta
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import io
 import time
 import os
@@ -221,8 +221,9 @@ def display_visualizations(gap_df: pd.DataFrame, filter_values: Dict,
             st.plotly_chart(fig_coverage, use_container_width=True)
 
 def prepare_display_dataframe(gap_df: pd.DataFrame, filter_values: Dict, 
-                             formatter: Any, include_safety: bool) -> pd.DataFrame:
-    """Prepare dataframe for display with formatting"""
+                             formatter: Any, include_safety: bool,
+                             selected_columns: List[str] = None) -> pd.DataFrame:
+    """Prepare dataframe for display with formatting and column selection"""
     display_df = gap_df.copy()
     
     # Enhanced status mapping with safety stock statuses
@@ -245,37 +246,66 @@ def prepare_display_dataframe(gap_df: pd.DataFrame, filter_values: Dict,
     
     display_df['Status'] = display_df['gap_status'].map(status_display).fillna('❓ Unknown')
     
-    # Format numeric columns
-    format_columns = {
-        'total_supply': lambda x: formatter.format_number(x),
-        'total_demand': lambda x: formatter.format_number(x),
-        'net_gap': lambda x: formatter.format_number(x, show_sign=True),
-        'coverage_ratio': lambda x: f"{x:.2f}x" if x < 10 else "999x+",
-        'gap_percentage': lambda x: f"{x:.1f}%" if pd.notna(x) else "N/A"
-    }
+    # Format all numeric columns for display
+    if 'total_supply' in display_df.columns:
+        display_df['Supply'] = display_df['total_supply'].apply(lambda x: formatter.format_number(x))
     
-    # Add safety stock columns if included
-    if include_safety and 'safety_stock_qty' in display_df.columns:
-        format_columns['safety_stock_qty'] = lambda x: formatter.format_number(x)
-        format_columns['safety_coverage'] = lambda x: f"{x:.1f}x" if pd.notna(x) and x < 999 else "N/A"
+    if 'total_demand' in display_df.columns:
+        display_df['Demand'] = display_df['total_demand'].apply(lambda x: formatter.format_number(x))
     
-    for col, fmt_func in format_columns.items():
-        if col in display_df.columns:
-            display_df[f"{col}_display"] = display_df[col].apply(fmt_func)
+    if 'net_gap' in display_df.columns:
+        display_df['Net GAP'] = display_df['net_gap'].apply(lambda x: formatter.format_number(x, show_sign=True))
     
-    # Select columns based on grouping and safety stock
-    if filter_values.get('group_by') == 'product':
-        columns = ['pt_code', 'product_name', 'brand']
-    else:  # brand
-        columns = ['brand']
+    if 'coverage_ratio' in display_df.columns:
+        display_df['Coverage'] = display_df['coverage_ratio'].apply(lambda x: f"{x:.2f}x" if x < 10 else "999x+")
     
-    columns.extend(['total_supply_display', 'total_demand_display'])
+    if 'gap_percentage' in display_df.columns:
+        display_df['GAP %'] = display_df['gap_percentage'].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else "N/A")
     
-    # Add safety stock column if included
-    if include_safety and 'safety_stock_qty_display' in display_df.columns:
-        columns.append('safety_stock_qty_display')
+    # Safety stock columns (when included)
+    if include_safety:
+        if 'safety_stock_qty' in display_df.columns:
+            display_df['Safety Stock'] = display_df['safety_stock_qty'].apply(lambda x: formatter.format_number(x))
+        
+        if 'available_supply' in display_df.columns:
+            # True GAP = Available Supply (after safety) - Demand
+            display_df['Available'] = display_df['available_supply'].apply(lambda x: formatter.format_number(x))
+            true_gap = display_df['available_supply'] - display_df.get('total_demand', 0)
+            display_df['True GAP'] = true_gap.apply(lambda x: formatter.format_number(x, show_sign=True))
+        
+        if 'safety_coverage' in display_df.columns:
+            display_df['Safety Cov'] = display_df['safety_coverage'].apply(
+                lambda x: f"{x:.1f}x" if pd.notna(x) and x < 999 else "N/A"
+            )
+        
+        if 'below_reorder' in display_df.columns:
+            display_df['Reorder'] = display_df['below_reorder'].apply(lambda x: '⚠️ Yes' if x else '✅ No')
     
-    columns.extend(['net_gap_display', 'Status', 'suggested_action'])
+    # Rename suggested_action for better display
+    if 'suggested_action' in display_df.columns:
+        display_df['Action'] = display_df['suggested_action']
+    
+    # Define available columns based on context
+    if selected_columns:
+        # Use user-selected columns
+        columns = selected_columns
+    else:
+        # Default column sets
+        if filter_values.get('group_by') == 'product':
+            columns = ['pt_code', 'product_name', 'brand']
+        else:  # brand
+            columns = ['brand']
+        
+        # Always show core metrics
+        columns.extend(['Supply', 'Demand'])
+        
+        # Add safety stock columns if included
+        if include_safety:
+            columns.extend(['Safety Stock', 'Available', 'True GAP'])
+        else:
+            columns.append('Net GAP')
+        
+        columns.extend(['Coverage', 'Status', 'Action'])
     
     # Filter to available columns
     columns = [col for col in columns if col in display_df.columns]
@@ -346,10 +376,157 @@ def display_paginated_table(df: pd.DataFrame, items_per_page: int) -> None:
 
 def display_data_table(gap_df: pd.DataFrame, filter_values: Dict, 
                       formatter: Any, metrics: Dict, include_safety: bool) -> None:
-    """Display the main data table with search and export"""
+    """Display the main data table with search, column selection, and export"""
     
-    # Prepare display dataframe
-    display_df = prepare_display_dataframe(gap_df, filter_values, formatter, include_safety)
+    # Column configuration section
+    with st.expander("⚙️ Table Configuration", expanded=False):
+        st.markdown("**Select columns to display:**")
+        
+        # Define all available columns with descriptions
+        all_columns = {
+            'Basic Info': ['pt_code', 'product_name', 'brand'],
+            'Supply & Demand': ['Supply', 'Demand', 'Net GAP'],
+            'Safety Stock': ['Safety Stock', 'Available', 'True GAP', 'Safety Cov', 'Reorder'],
+            'Analysis': ['Coverage', 'GAP %', 'Status', 'Action'],
+            'Financial': ['at_risk_value_usd', 'gap_value_usd'],
+            'Details': ['supply_inventory', 'supply_can_pending', 'supply_warehouse_transfer', 
+                       'supply_purchase_order', 'demand_oc_pending', 'demand_forecast']
+        }
+        
+        # Column descriptions for tooltips
+        column_descriptions = {
+            'Basic Info': "PT Code, Product Name, Brand",
+            'Supply & Demand': "Total Supply, Total Demand, Net GAP (Supply - Demand)",
+            'Safety Stock': "Safety Stock Required, Available (Supply - Safety), True GAP, Safety Coverage, Reorder Status",
+            'Analysis': "Coverage Ratio, GAP Percentage, Status Indicator, Suggested Action",
+            'Financial': "At Risk Value (USD), GAP Value (USD)",
+            'Details': "Individual supply sources (Inventory, CAN, Transfer, PO) and demand sources (OC, Forecast)"
+        }
+        
+        # Initialize session state for column selections if not exists
+        if 'table_col_basic' not in st.session_state:
+            st.session_state.table_col_basic = True
+            st.session_state.table_col_supply = True
+            st.session_state.table_col_safety = True
+            st.session_state.table_col_analysis = True
+            st.session_state.table_col_financial = False
+            st.session_state.table_col_details = False
+        
+        # Create column selector
+        col1, col2, col3 = st.columns(3)
+        selected_columns = []
+        
+        with col1:
+            if st.checkbox("Basic Info", 
+                          value=st.session_state.table_col_basic,
+                          key="col_basic_check",
+                          help=column_descriptions['Basic Info']):
+                selected_columns.extend(all_columns['Basic Info'])
+                st.session_state.table_col_basic = True
+            else:
+                st.session_state.table_col_basic = False
+                
+            if st.checkbox("Supply & Demand", 
+                          value=st.session_state.table_col_supply,
+                          key="col_supply_check",
+                          help=column_descriptions['Supply & Demand']):
+                selected_columns.extend(all_columns['Supply & Demand'])
+                st.session_state.table_col_supply = True
+            else:
+                st.session_state.table_col_supply = False
+        
+        with col2:
+            if include_safety and st.checkbox("Safety Stock", 
+                                             value=st.session_state.table_col_safety,
+                                             key="col_safety_check",
+                                             help=column_descriptions['Safety Stock']):
+                selected_columns.extend(all_columns['Safety Stock'])
+                st.session_state.table_col_safety = True
+            elif include_safety:
+                st.session_state.table_col_safety = False
+                
+            if st.checkbox("Analysis", 
+                          value=st.session_state.table_col_analysis,
+                          key="col_analysis_check",
+                          help=column_descriptions['Analysis']):
+                selected_columns.extend(all_columns['Analysis'])
+                st.session_state.table_col_analysis = True
+            else:
+                st.session_state.table_col_analysis = False
+        
+        with col3:
+            if st.checkbox("Financial", 
+                          value=st.session_state.table_col_financial,
+                          key="col_financial_check",
+                          help=column_descriptions['Financial']):
+                selected_columns.extend(all_columns['Financial'])
+                st.session_state.table_col_financial = True
+            else:
+                st.session_state.table_col_financial = False
+                
+            if st.checkbox("Details", 
+                          value=st.session_state.table_col_details,
+                          key="col_details_check",
+                          help=column_descriptions['Details']):
+                selected_columns.extend(all_columns['Details'])
+                st.session_state.table_col_details = True
+            else:
+                st.session_state.table_col_details = False
+        
+        # Apply preset configurations
+        st.markdown("**Quick presets:**")
+        preset_col1, preset_col2, preset_col3, preset_col4 = st.columns(4)
+        
+        with preset_col1:
+            if st.button("📊 Standard View", 
+                        use_container_width=True,
+                        help="Show Basic Info + Supply/Demand + Analysis columns"):
+                st.session_state.table_col_basic = True
+                st.session_state.table_col_supply = True
+                st.session_state.table_col_safety = False
+                st.session_state.table_col_analysis = True
+                st.session_state.table_col_financial = False
+                st.session_state.table_col_details = False
+                st.rerun()
+        
+        with preset_col2:
+            if st.button("🔒 Safety View", 
+                        use_container_width=True,
+                        help="Show Basic Info + Safety Stock + Status/Action columns"):
+                st.session_state.table_col_basic = True
+                st.session_state.table_col_supply = False
+                st.session_state.table_col_safety = True
+                st.session_state.table_col_analysis = True
+                st.session_state.table_col_financial = False
+                st.session_state.table_col_details = False
+                st.rerun()
+        
+        with preset_col3:
+            if st.button("💰 Financial View", 
+                        use_container_width=True,
+                        help="Show Basic Info + GAP + Financial metrics"):
+                st.session_state.table_col_basic = True
+                st.session_state.table_col_supply = True
+                st.session_state.table_col_safety = False
+                st.session_state.table_col_analysis = False
+                st.session_state.table_col_financial = True
+                st.session_state.table_col_details = False
+                st.rerun()
+        
+        with preset_col4:
+            if st.button("📋 All Columns", 
+                        use_container_width=True,
+                        help="Show all available columns"):
+                st.session_state.table_col_basic = True
+                st.session_state.table_col_supply = True
+                st.session_state.table_col_safety = True
+                st.session_state.table_col_analysis = True
+                st.session_state.table_col_financial = True
+                st.session_state.table_col_details = True
+                st.rerun()
+    
+    # Prepare display dataframe with selected columns
+    display_df = prepare_display_dataframe(gap_df, filter_values, formatter, include_safety, selected_columns)
     
     # Controls row
     col1, col2, col3 = st.columns([2, 1, 1])
@@ -377,6 +554,10 @@ def display_data_table(gap_df: pd.DataFrame, filter_values: Dict,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
             st.success("✅ Export ready!")
+    
+    # Display info about selected columns
+    if selected_columns:
+        st.caption(f"Showing {len(selected_columns)} columns | {len(display_df)} items found")
     
     # Display paginated table
     display_paginated_table(display_df, items_per_page)
