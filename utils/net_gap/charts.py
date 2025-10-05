@@ -1,9 +1,10 @@
 # utils/net_gap/charts.py
 
 """
-Visualization module for GAP Analysis System - Updated Version
-- Removed Category references
-- Only supports Product and Brand grouping
+Visualization module for GAP Analysis System - Version 2.0
+- Removed unnecessary heatmap
+- Enhanced KPI cards with safety stock metrics
+- Context-aware visualizations
 """
 
 import pandas as pd
@@ -15,26 +16,42 @@ from typing import Dict, List, Optional, Any
 
 # Chart configuration constants
 CHART_HEIGHT_DEFAULT = 400
-CHART_HEIGHT_PER_ITEM = 40
+CHART_HEIGHT_PER_ITEM = 35
 MIN_CHART_HEIGHT = 300
-MAX_CHART_HEIGHT = 800
+MAX_CHART_HEIGHT = 700
 
-# Color scheme for GAP statuses
+# Enhanced color scheme with safety stock statuses
 STATUS_COLORS = {
-    'SEVERE_SHORTAGE': '#FF4444',
-    'HIGH_SHORTAGE': '#FF8800',
-    'MODERATE_SHORTAGE': '#FFAA00',
-    'BALANCED': '#00AA00',
-    'LIGHT_SURPLUS': '#0088FF',
-    'MODERATE_SURPLUS': '#8800FF',
-    'HIGH_SURPLUS': '#FF8800',
-    'SEVERE_SURPLUS': '#FF4444',
-    'NO_DEMAND': '#CCCCCC',
-    'NO_DEMAND_INCOMING': '#999999',
-    'UNKNOWN': '#888888'
+    # Safety stock specific statuses
+    'CRITICAL_BREACH': '#8B0000',  # Dark red
+    'BELOW_SAFETY': '#FF4444',     # Red
+    'AT_REORDER': '#FFA500',       # Orange
+    'HAS_EXPIRED': '#8B4513',      # Saddle brown
+    'EXPIRY_RISK': '#FF8C00',      # Dark orange
+    
+    # Traditional statuses
+    'SEVERE_SHORTAGE': '#FF0000',   # Red
+    'HIGH_SHORTAGE': '#FF8800',     # Orange-red
+    'MODERATE_SHORTAGE': '#FFAA00', # Orange
+    'BALANCED': '#00AA00',          # Green
+    'LIGHT_SURPLUS': '#0088FF',     # Light blue
+    'MODERATE_SURPLUS': '#0066CC',  # Medium blue
+    'HIGH_SURPLUS': '#FF8800',      # Orange (concern)
+    'SEVERE_SURPLUS': '#FF4444',    # Red (critical)
+    'NO_DEMAND': '#CCCCCC',         # Gray
+    'NO_DEMAND_INCOMING': '#999999', # Dark gray
+    'UNKNOWN': '#888888'             # Medium gray
 }
 
 STATUS_LABELS = {
+    # Safety stock specific statuses
+    'CRITICAL_BREACH': '🚨 Critical Safety Breach',
+    'BELOW_SAFETY': '⚠️ Below Safety Stock',
+    'AT_REORDER': '📦 At Reorder Point',
+    'HAS_EXPIRED': '❌ Has Expired Stock',
+    'EXPIRY_RISK': '⏰ Expiry Risk',
+    
+    # Traditional statuses
     'SEVERE_SHORTAGE': '🔴 Severe Shortage',
     'HIGH_SHORTAGE': '🟠 High Shortage',
     'MODERATE_SHORTAGE': '🟡 Moderate Shortage',
@@ -44,7 +61,7 @@ STATUS_LABELS = {
     'HIGH_SURPLUS': '🟠 High Surplus',
     'SEVERE_SURPLUS': '🔴 Severe Surplus',
     'NO_DEMAND': '⚪ No Demand',
-    'NO_DEMAND_INCOMING': '🟤 No Demand (PO Incoming)',
+    'NO_DEMAND_INCOMING': '🟤 No Demand (PO Coming)',
     'UNKNOWN': '❓ Unknown'
 }
 
@@ -59,7 +76,7 @@ CHART_THEME = {
 
 
 class GAPCharts:
-    """Creates visualization components for GAP analysis"""
+    """Creates visualization components for GAP analysis with safety stock support"""
     
     def __init__(self, formatter):
         """
@@ -69,15 +86,21 @@ class GAPCharts:
             formatter: Instance of GAPFormatter for consistent formatting
         """
         self.formatter = formatter
+        self._include_safety = False
     
-    def create_kpi_cards(self, metrics: Dict[str, Any], enable_customer_dialog: bool = True) -> None:
+    def create_kpi_cards(self, metrics: Dict[str, Any], include_safety: bool = False,
+                        enable_customer_dialog: bool = True) -> None:
         """
         Create KPI cards using Streamlit columns
+        Enhanced with safety stock metrics when enabled
         
         Args:
             metrics: Dictionary of metrics from calculator
+            include_safety: Whether safety stock is included in analysis
             enable_customer_dialog: Whether to show customer dialog button
         """
+        self._include_safety = include_safety
+        
         # First row - Main metrics
         col1, col2, col3, col4 = st.columns(4)
         
@@ -89,23 +112,41 @@ class GAPCharts:
             )
         
         with col2:
+            # Context-aware shortage label
+            if include_safety:
+                shortage_label = "⚠️ Below Requirements"
+                help_text = "Items below demand or safety stock requirements"
+            else:
+                shortage_label = "⚠️ Shortage Items"
+                help_text = "Items with insufficient supply to meet demand"
+            
             shortage_pct = self._calculate_percentage(
                 metrics['shortage_items'], 
                 metrics['total_products']
             )
             st.metric(
-                label="⚠️ Shortage Items",
+                label=shortage_label,
                 value=self.formatter.format_number(metrics['shortage_items']),
                 delta=f"{shortage_pct:.1f}% of total",
-                delta_color="inverse"
+                delta_color="inverse",
+                help=help_text
             )
         
         with col3:
+            # Critical items (adapts based on safety)
+            if include_safety:
+                critical_label = "🚨 Safety Breaches"
+                critical_help = "Items critically below safety stock or with expired inventory"
+            else:
+                critical_label = "🚨 Critical Items"
+                critical_help = "Items requiring immediate action"
+            
             st.metric(
-                label="🚨 Critical Items",
+                label=critical_label,
                 value=self.formatter.format_number(metrics['critical_items']),
                 delta="Immediate action" if metrics['critical_items'] > 0 else "All good",
-                delta_color="inverse" if metrics['critical_items'] > 0 else "normal"
+                delta_color="inverse" if metrics['critical_items'] > 0 else "normal",
+                help=critical_help
             )
         
         with col4:
@@ -113,8 +154,10 @@ class GAPCharts:
             st.metric(
                 label="📊 Coverage Rate",
                 value=f"{coverage:.1f}%",
-                delta=self._get_coverage_delta(coverage),
-                delta_color="normal" if coverage >= 95 else "inverse"
+                delta=self._get_coverage_delta(coverage, include_safety),
+                delta_color="normal" if coverage >= 95 else "inverse",
+                help="Overall supply coverage considering demand" + 
+                     (" and safety requirements" if include_safety else "")
             )
         
         # Second row - Volume and value metrics
@@ -144,7 +187,7 @@ class GAPCharts:
             )
         
         with col4:
-            # Affected Customers card with dialog button
+            # Affected Customers with dialog button
             affected_count = metrics['affected_customers']
             
             metric_container = st.container()
@@ -156,21 +199,69 @@ class GAPCharts:
                     help="Number of unique customers impacted by shortages"
                 )
                 
-                # Add button to view details if there are affected customers
                 if enable_customer_dialog and affected_count > 0:
                     if st.button(
-                        f"📋 View Details →",
+                        f"📋 View Details",
                         key="view_customer_details",
                         type="primary",
-                        use_container_width=True,
-                        help=f"Click to see details of {affected_count} affected customers"
+                        use_container_width=True
                     ):
                         st.session_state.show_customer_dialog = True
                         st.rerun()
+        
+        # Third row - Safety stock specific metrics (only if enabled and available)
+        if include_safety and 'below_safety_count' in metrics:
+            st.divider()
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric(
+                    label="🔒 Below Safety",
+                    value=self.formatter.format_number(metrics.get('below_safety_count', 0)),
+                    help="Items with inventory below safety stock requirement"
+                )
+            
+            with col2:
+                st.metric(
+                    label="📦 At Reorder",
+                    value=self.formatter.format_number(metrics.get('at_reorder_count', 0)),
+                    help="Items at or below reorder point"
+                )
+            
+            with col3:
+                st.metric(
+                    label="💵 Safety Value",
+                    value=self.formatter.format_currency(
+                        metrics.get('safety_stock_value', 0),
+                        abbreviate=True
+                    ),
+                    help="Total value of safety stock requirements"
+                )
+            
+            with col4:
+                expired_count = metrics.get('has_expired_count', 0)
+                expiry_risk = metrics.get('expiry_risk_count', 0)
+                
+                if expired_count > 0:
+                    st.metric(
+                        label="❌ Expired",
+                        value=expired_count,
+                        delta=f"+{expiry_risk} at risk",
+                        delta_color="inverse",
+                        help="Products with expired or expiring inventory"
+                    )
+                else:
+                    st.metric(
+                        label="📅 Expiry Status",
+                        value="Clear",
+                        delta=f"{expiry_risk} watch" if expiry_risk > 0 else "All good",
+                        help="No expired inventory detected"
+                    )
     
     def create_status_pie_chart(self, gap_df: pd.DataFrame) -> go.Figure:
         """
         Create pie chart showing distribution of items by GAP status
+        Adapts to show safety-specific statuses when enabled
         
         Args:
             gap_df: DataFrame with GAP calculations
@@ -211,9 +302,13 @@ class GAPCharts:
         ])
         
         # Update layout
+        title = 'Distribution by GAP Status'
+        if self._include_safety:
+            title += ' (Including Safety Stock)'
+        
         fig.update_layout(
             title={
-                'text': 'Distribution by GAP Status',
+                'text': title,
                 'x': 0.5,
                 'xanchor': 'center',
                 'font': {'size': CHART_THEME['title_font_size']}
@@ -289,9 +384,13 @@ class GAPCharts:
         chart_height = self._calculate_dynamic_height(len(top_items))
         
         # Update layout
+        title = f'Top {len(top_items)} Shortage Items'
+        if self._include_safety:
+            title += ' (Considering Safety Stock)'
+        
         fig.update_layout(
             title={
-                'text': f'Top {len(top_items)} Shortage Items',
+                'text': title,
                 'x': 0.5,
                 'xanchor': 'center',
                 'font': {'size': CHART_THEME['title_font_size']}
@@ -314,6 +413,7 @@ class GAPCharts:
     def create_supply_demand_comparison(self, gap_df: pd.DataFrame, top_n: int = 15) -> go.Figure:
         """
         Create grouped bar chart comparing supply vs demand
+        Shows available supply when safety stock is considered
         
         Args:
             gap_df: DataFrame with GAP calculations
@@ -336,20 +436,30 @@ class GAPCharts:
         # Create figure
         fig = go.Figure()
         
+        # Determine what to show as supply
+        if self._include_safety and 'available_supply' in top_items.columns:
+            supply_values = top_items['available_supply']
+            supply_label = 'Available Supply'
+            supply_hover = 'Available (after safety): %{y:,.0f}'
+        else:
+            supply_values = top_items['total_supply']
+            supply_label = 'Total Supply'
+            supply_hover = 'Supply: %{y:,.0f}'
+        
         # Add supply bars
         fig.add_trace(go.Bar(
-            name='Supply',
+            name=supply_label,
             x=display_names,
-            y=top_items['total_supply'],
+            y=supply_values,
             marker_color='#0088FF',
-            text=top_items['total_supply'].apply(lambda x: self.formatter.format_number(x)),
+            text=supply_values.apply(lambda x: self.formatter.format_number(x)),
             textposition='outside',
-            hovertemplate='Supply: %{y:,.0f}<extra></extra>'
+            hovertemplate=supply_hover + '<extra></extra>'
         ))
         
         # Add demand bars
         fig.add_trace(go.Bar(
-            name='Demand',
+            name='Total Demand',
             x=display_names,
             y=top_items['total_demand'],
             marker_color='#FF8800',
@@ -358,10 +468,26 @@ class GAPCharts:
             hovertemplate='Demand: %{y:,.0f}<extra></extra>'
         ))
         
+        # Add safety stock line if included
+        if self._include_safety and 'safety_stock_qty' in top_items.columns:
+            fig.add_trace(go.Scatter(
+                name='Safety Stock',
+                x=display_names,
+                y=top_items['safety_stock_qty'],
+                mode='lines+markers',
+                line=dict(color='red', dash='dash'),
+                marker=dict(size=8),
+                hovertemplate='Safety: %{y:,.0f}<extra></extra>'
+            ))
+        
         # Update layout
+        title = 'Supply vs Demand Comparison'
+        if self._include_safety:
+            title += ' (With Safety Requirements)'
+        
         fig.update_layout(
             title={
-                'text': 'Supply vs Demand Comparison',
+                'text': title,
                 'x': 0.5,
                 'xanchor': 'center',
                 'font': {'size': CHART_THEME['title_font_size']}
@@ -388,75 +514,58 @@ class GAPCharts:
         
         return fig
     
-    def create_gap_heatmap(self, gap_df: pd.DataFrame, group_by: str = 'brand') -> go.Figure:
+    def create_coverage_distribution(self, gap_df: pd.DataFrame) -> go.Figure:
         """
-        Create heatmap showing GAP by brand
+        Create histogram showing distribution of coverage ratios
+        More useful than heatmap for understanding overall inventory health
         
         Args:
             gap_df: DataFrame with GAP calculations
-            group_by: Grouping field (should be 'brand' only now)
             
         Returns:
             Plotly figure object
         """
-        # Validate group_by - only brand makes sense for heatmap now
-        if group_by not in ['brand'] or group_by not in gap_df.columns:
-            return self._create_empty_chart(f"Cannot create heatmap - '{group_by}' not available")
+        if gap_df.empty:
+            return self._create_empty_chart("No data for coverage distribution")
         
-        # Prepare data for heatmap
-        heatmap_data = gap_df.pivot_table(
-            values='gap_percentage',
-            index=group_by,
-            aggfunc='mean'
-        ).reset_index()
+        # Filter out extreme values for better visualization
+        coverage_data = gap_df[gap_df['coverage_ratio'] < 10]['coverage_ratio'] * 100
         
-        if heatmap_data.empty:
-            return self._create_empty_chart("No data for heatmap")
+        # Define bins and colors
+        bins = [0, 50, 70, 90, 110, 150, 200, 300, 1000]
+        bin_labels = ['<50%', '50-70%', '70-90%', '90-110%', '110-150%', '150-200%', '200-300%', '>300%']
+        bin_colors = ['#FF0000', '#FF8800', '#FFAA00', '#00AA00', '#0088FF', '#0066CC', '#FF8800', '#FF4444']
         
-        # Sort by gap percentage
-        heatmap_data = heatmap_data.sort_values('gap_percentage')
+        # Create histogram
+        fig = go.Figure(data=[
+            go.Histogram(
+                x=coverage_data,
+                nbinsx=30,
+                marker_color='#0088FF',
+                hovertemplate='Coverage: %{x:.0f}%<br>Count: %{y}<extra></extra>'
+            )
+        ])
         
-        # Prepare z values and normalize
-        z_values = heatmap_data['gap_percentage'].values.reshape(-1, 1)
-        z_normalized = np.clip(z_values, -100, 100)
+        # Add reference lines
+        fig.add_vline(x=100, line_dash="dash", line_color="green", 
+                     annotation_text="Target (100%)")
         
-        # Create heatmap
-        fig = go.Figure(data=go.Heatmap(
-            z=z_normalized,
-            y=heatmap_data[group_by],
-            x=['GAP %'],
-            text=z_values,
-            texttemplate='%{text:.1f}%',
-            textfont={"size": 12},
-            colorscale=self._get_gap_colorscale(),
-            zmid=0,
-            colorbar=dict(
-                title="GAP %",
-                tickmode='linear',
-                tick0=-100,
-                dtick=25,
-                ticksuffix='%'
-            ),
-            hovertemplate='<b>%{y}</b><br>' +
-                         'GAP: %{z:.1f}%<br>' +
-                         '<extra></extra>'
-        ))
-        
-        # Calculate dynamic height
-        chart_height = self._calculate_dynamic_height(len(heatmap_data), min_height=400)
+        if self._include_safety:
+            fig.add_vline(x=90, line_dash="dot", line_color="orange", 
+                         annotation_text="Min Safe (90%)")
         
         # Update layout
         fig.update_layout(
             title={
-                'text': f'GAP Percentage by {group_by.title()}',
+                'text': 'Coverage Ratio Distribution',
                 'x': 0.5,
                 'xanchor': 'center',
                 'font': {'size': CHART_THEME['title_font_size']}
             },
-            height=chart_height,
-            xaxis=dict(visible=False),
-            yaxis_title="",
-            margin=dict(l=150),
+            xaxis_title="Coverage (%)",
+            yaxis_title="Number of Products",
+            height=CHART_HEIGHT_DEFAULT,
+            showlegend=False,
             font=dict(
                 family=CHART_THEME['font_family'],
                 size=CHART_THEME['font_size']
@@ -491,16 +600,28 @@ class GAPCharts:
         """Calculate percentage safely"""
         return (part / whole * 100) if whole > 0 else 0
     
-    def _get_coverage_delta(self, coverage: float) -> str:
+    def _get_coverage_delta(self, coverage: float, include_safety: bool = False) -> str:
         """Get coverage delta message"""
-        if coverage >= 100:
-            return "Excellent"
-        elif coverage >= 95:
-            return "On target"
-        elif coverage >= 90:
-            return "Below target"
+        if include_safety:
+            # Stricter targets with safety stock
+            if coverage >= 110:
+                return "Excellent"
+            elif coverage >= 100:
+                return "Good"
+            elif coverage >= 90:
+                return "Below target"
+            else:
+                return "Critical"
         else:
-            return f"Target: 95%"
+            # Standard targets
+            if coverage >= 100:
+                return "Excellent"
+            elif coverage >= 95:
+                return "On target"
+            elif coverage >= 90:
+                return "Below target"
+            else:
+                return "Target: 95%"
     
     def _calculate_dynamic_height(self, n_items: int, min_height: int = MIN_CHART_HEIGHT) -> int:
         """Calculate dynamic chart height based on items"""
@@ -508,10 +629,7 @@ class GAPCharts:
         return min(calculated_height, MAX_CHART_HEIGHT)
     
     def _prepare_display_names(self, df: pd.DataFrame) -> List[str]:
-        """
-        Prepare display names for items
-        REMOVED CATEGORY HANDLING
-        """
+        """Prepare display names for items"""
         if 'product_name' in df.columns and 'pt_code' in df.columns:
             return df.apply(
                 lambda x: f"{x['pt_code']} - {x['product_name'][:25]}{'...' if len(str(x['product_name'])) > 25 else ''}",
@@ -520,28 +638,13 @@ class GAPCharts:
         elif 'brand' in df.columns:
             return df['brand'].tolist()
         else:
-            # Default fallback
             return df.index.astype(str).tolist()
     
     def _prepare_short_names(self, df: pd.DataFrame) -> List[str]:
-        """
-        Prepare short names for x-axis
-        REMOVED CATEGORY HANDLING
-        """
+        """Prepare short names for x-axis"""
         if 'pt_code' in df.columns:
             return df['pt_code'].tolist()
         elif 'brand' in df.columns:
             return df['brand'].tolist()
         else:
-            # Default fallback
             return df.index.astype(str).tolist()
-    
-    def _get_gap_colorscale(self) -> List[List]:
-        """Get color scale for GAP heatmap"""
-        return [
-            [0.0, '#FF0000'],    # Deep red for severe shortage
-            [0.4, '#FFAA00'],    # Orange for shortage
-            [0.5, '#00AA00'],    # Green for balanced
-            [0.6, '#00AAFF'],    # Light blue for small surplus
-            [1.0, '#0000FF']     # Blue for high surplus
-        ]

@@ -38,7 +38,7 @@ def show_login_page():
         st.markdown("<h1 style='text-align: center;'>📊 GAP Analysis System</h1>", unsafe_allow_html=True)
         st.markdown("<p style='text-align: center; color: #666;'>Please login to continue</p>", unsafe_allow_html=True)
         
-        st.divider()
+        # st.divider()
         
         # Login form
         with st.form("login_form"):

@@ -1,17 +1,18 @@
 # utils/net_gap/data_loader.py
 
 """
-Data loader module for GAP Analysis System - Updated Version
-- Added get_date_range() method for auto date detection
-- Improved product/customer selection support
+Data loader module for GAP Analysis System - Version 2.0
+- Added safety stock data loading
+- Improved caching strategy
+- Better error handling
 """
 
 import pandas as pd
 import streamlit as st
 from datetime import datetime, date, timedelta
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 import logging
-from sqlalchemy import text, bindparam
+from sqlalchemy import text
 from contextlib import contextmanager
 
 # Import database connection
@@ -26,16 +27,18 @@ from utils.db import get_db_engine
 logger = logging.getLogger(__name__)
 
 # Cache configuration
-CACHE_TTL_DATA = 300  # 5 minutes for data
+CACHE_TTL_DATA = 300  # 5 minutes for transactional data
 CACHE_TTL_REFERENCE = 600  # 10 minutes for reference data
+CACHE_TTL_SAFETY = 900  # 15 minutes for safety stock (changes less frequently)
 
 
 class GAPDataLoader:
-    """Handles all data loading operations for GAP analysis"""
+    """Handles all data loading operations for GAP analysis including safety stock"""
     
     def __init__(self):
         """Initialize data loader with database engine"""
         self._engine = None
+        self._safety_stock_available = None  # Cache availability check
     
     @property
     def engine(self):
@@ -52,6 +55,142 @@ class GAPDataLoader:
             yield conn
         finally:
             conn.close()
+    
+    @st.cache_data(ttl=CACHE_TTL_REFERENCE)
+    def check_safety_stock_availability(_self) -> bool:
+        """
+        Check if safety stock data is available in the database
+        
+        Returns:
+            True if safety stock tables exist and have data
+        """
+        if _self._safety_stock_available is not None:
+            return _self._safety_stock_available
+            
+        try:
+            query = """
+                SELECT COUNT(*) as count
+                FROM safety_stock_levels
+                WHERE delete_flag = 0 
+                  AND is_active = 1
+                  AND CURRENT_DATE() BETWEEN effective_from 
+                  AND COALESCE(effective_to, '2999-12-31')
+                LIMIT 1
+            """
+            
+            with _self.get_connection() as conn:
+                result = conn.execute(text(query)).fetchone()
+                _self._safety_stock_available = result[0] > 0 if result else False
+                
+            logger.info(f"Safety stock availability: {_self._safety_stock_available}")
+            return _self._safety_stock_available
+            
+        except Exception as e:
+            logger.warning(f"Safety stock tables not available: {e}")
+            _self._safety_stock_available = False
+            return False
+    
+    @st.cache_data(ttl=CACHE_TTL_SAFETY)
+    def load_safety_stock_data(
+        _self,
+        entity_id: Optional[int] = None,
+        product_ids: Optional[List[int]] = None,
+        include_customer_specific: bool = True
+    ) -> pd.DataFrame:
+        """
+        Load safety stock requirements from safety_stock_current_view
+        
+        Args:
+            entity_id: Filter by entity ID
+            product_ids: List of product IDs to filter
+            include_customer_specific: Whether to include customer-specific rules
+            
+        Returns:
+            DataFrame with safety stock requirements
+        """
+        try:
+            # Build query with filters
+            query_parts = ["""
+                SELECT 
+                    product_id,
+                    product_name,
+                    pt_code,
+                    brand,
+                    standard_uom,
+                    entity_id,
+                    entity_name,
+                    customer_id,
+                    customer_name,
+                    safety_stock_qty,
+                    reorder_point,
+                    calculation_method,
+                    avg_daily_demand,
+                    safety_days,
+                    lead_time_days,
+                    service_level_percent,
+                    days_since_calculation,
+                    rule_type,
+                    priority_level
+                FROM safety_stock_current_view
+                WHERE 1=1
+            """]
+            
+            params = {}
+            
+            # Add filters
+            if entity_id:
+                query_parts.append("AND entity_id = :entity_id")
+                params['entity_id'] = entity_id
+            
+            if product_ids:
+                # Handle list of product IDs
+                product_placeholders = [f":prod_{i}" for i in range(len(product_ids))]
+                query_parts.append(f"AND product_id IN ({','.join(product_placeholders)})")
+                for i, pid in enumerate(product_ids):
+                    params[f'prod_{i}'] = pid
+            
+            if not include_customer_specific:
+                query_parts.append("AND customer_id IS NULL")
+            
+            query_parts.append("ORDER BY product_id, priority_level")
+            
+            query = " ".join(query_parts)
+            
+            with _self.get_connection() as conn:
+                df = pd.read_sql(text(query), conn, params=params)
+            
+            # Process dataframe
+            df = _self._process_safety_stock_dataframe(df)
+            
+            logger.info(f"Loaded {len(df)} safety stock rules")
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error loading safety stock data: {e}", exc_info=True)
+            return pd.DataFrame()
+    
+    def _process_safety_stock_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Process and clean safety stock dataframe"""
+        if df.empty:
+            return df
+        
+        # Convert numeric columns
+        numeric_columns = [
+            'safety_stock_qty', 'reorder_point', 'avg_daily_demand',
+            'safety_days', 'lead_time_days', 'service_level_percent',
+            'days_since_calculation', 'priority_level'
+        ]
+        
+        for col in numeric_columns:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        
+        # For multiple rules per product, keep only highest priority (lowest number)
+        # This handles customer-specific overrides automatically
+        df = df.sort_values(['product_id', 'priority_level'])
+        df = df.groupby('product_id').first().reset_index()
+        
+        return df
     
     @st.cache_data(ttl=CACHE_TTL_REFERENCE)
     def get_date_range(_self) -> Dict[str, date]:
@@ -126,8 +265,8 @@ class GAPDataLoader:
             entity_name: Filter by entity
             date_from: Start date for availability_date filter
             date_to: End date for availability_date filter
-            product_ids: List of product IDs to filter (multiselect)
-            brands: List of brands to filter (multiselect)
+            product_ids: List of product IDs to filter
+            brands: List of brands to filter
             
         Returns:
             DataFrame with supply data
@@ -168,9 +307,9 @@ class GAPDataLoader:
             entity_name: Filter by entity
             date_from: Start date for required_date filter
             date_to: End date for required_date filter
-            product_ids: List of product IDs to filter (multiselect)
-            brands: List of brands to filter (multiselect)
-            customers: List of customers to filter (multiselect)
+            product_ids: List of product IDs to filter
+            brands: List of brands to filter
+            customers: List of customers to filter
             
         Returns:
             DataFrame with demand data
@@ -201,7 +340,7 @@ class GAPDataLoader:
         date_to: Optional[date],
         product_ids: Optional[List[int]],
         brands: Optional[List[str]]
-    ) -> tuple[str, Dict[str, Any]]:
+    ) -> Tuple[str, Dict[str, Any]]:
         """Build parameterized supply query"""
         
         # Base query with required columns
@@ -252,15 +391,15 @@ class GAPDataLoader:
             query_parts.append("AND availability_date <= :date_to")
             params['date_to'] = date_to
         
-        # Handle multiselect product_ids (can be empty list for all)
-        if product_ids:  # Only filter if list is not empty
+        # Handle multiselect product_ids
+        if product_ids:
             product_placeholders = [f":prod_{i}" for i in range(len(product_ids))]
             query_parts.append(f"AND product_id IN ({','.join(product_placeholders)})")
             for i, pid in enumerate(product_ids):
                 params[f'prod_{i}'] = pid
         
-        # Handle multiselect brands (can be empty list for all)
-        if brands:  # Only filter if list is not empty
+        # Handle multiselect brands
+        if brands:
             brand_placeholders = [f":brand_{i}" for i in range(len(brands))]
             query_parts.append(f"AND brand IN ({','.join(brand_placeholders)})")
             for i, brand in enumerate(brands):
@@ -278,7 +417,7 @@ class GAPDataLoader:
         product_ids: Optional[List[int]],
         brands: Optional[List[str]],
         customers: Optional[List[str]]
-    ) -> tuple[str, Dict[str, Any]]:
+    ) -> Tuple[str, Dict[str, Any]]:
         """Build parameterized demand query"""
         
         query_parts = ["""
@@ -328,22 +467,22 @@ class GAPDataLoader:
             query_parts.append("AND required_date <= :date_to")
             params['date_to'] = date_to
         
-        # Handle multiselect product_ids (can be empty list for all)
-        if product_ids:  # Only filter if list is not empty
+        # Handle multiselect product_ids
+        if product_ids:
             product_placeholders = [f":prod_{i}" for i in range(len(product_ids))]
             query_parts.append(f"AND product_id IN ({','.join(product_placeholders)})")
             for i, pid in enumerate(product_ids):
                 params[f'prod_{i}'] = pid
         
-        # Handle multiselect brands (can be empty list for all)
-        if brands:  # Only filter if list is not empty
+        # Handle multiselect brands
+        if brands:
             brand_placeholders = [f":brand_{i}" for i in range(len(brands))]
             query_parts.append(f"AND brand IN ({','.join(brand_placeholders)})")
             for i, brand in enumerate(brands):
                 params[f'brand_{i}'] = brand
         
-        # Handle multiselect customers (can be empty list for all)
-        if customers:  # Only filter if list is not empty
+        # Handle multiselect customers
+        if customers:
             customer_placeholders = [f":cust_{i}" for i in range(len(customers))]
             query_parts.append(f"AND customer IN ({','.join(customer_placeholders)})")
             for i, customer in enumerate(customers):
@@ -436,7 +575,7 @@ class GAPDataLoader:
     
     @st.cache_data(ttl=CACHE_TTL_REFERENCE)
     def get_products(_self, entity_name: Optional[str] = None) -> pd.DataFrame:
-        """Get list of products with basic info for multiselect"""
+        """Get list of products with basic info"""
         try:
             params = {}
             
@@ -479,7 +618,7 @@ class GAPDataLoader:
     
     @st.cache_data(ttl=CACHE_TTL_REFERENCE)
     def get_brands(_self, entity_name: Optional[str] = None) -> List[str]:
-        """Get list of unique brands for multiselect"""
+        """Get list of unique brands"""
         try:
             params = {}
             
@@ -514,7 +653,7 @@ class GAPDataLoader:
     
     @st.cache_data(ttl=CACHE_TTL_REFERENCE)
     def get_customers(_self, entity_name: Optional[str] = None) -> List[str]:
-        """Get list of unique customers for multiselect"""
+        """Get list of unique customers"""
         try:
             query = """
                 SELECT DISTINCT customer
