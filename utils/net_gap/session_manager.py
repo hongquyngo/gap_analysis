@@ -71,10 +71,11 @@ class SessionStateManager:
     
     def _get_default_filters(self) -> Dict[str, Any]:
         """Get default filter configuration"""
-        today = date.today()
+        # Note: date_range should be set by filters module from actual data
+        # Using None as placeholder to indicate it needs to be initialized
         return {
             'entity': None,
-            'date_range': (today, today + timedelta(days=30)),
+            'date_range': None,  # Will be set by filters from data
             'products': [],
             'brands': [],
             'customers': [],

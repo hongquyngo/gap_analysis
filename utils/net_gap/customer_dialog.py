@@ -95,6 +95,13 @@ class CustomerImpactDialog:
         try:
             # Build shortage lookup dictionary (vectorized)
             shortage_df = gap_df[gap_df['product_id'].isin(shortage_product_ids)].copy()
+            
+            # Handle potential duplicates by keeping first occurrence
+            # This can happen if data was filtered multiple times
+            if shortage_df['product_id'].duplicated().any():
+                logger.warning(f"Found {shortage_df['product_id'].duplicated().sum()} duplicate product IDs, keeping first occurrence")
+                shortage_df = shortage_df.drop_duplicates(subset=['product_id'], keep='first')
+            
             shortage_lookup = shortage_df.set_index('product_id').to_dict('index')
             
             # Filter demand for shortage products
@@ -572,12 +579,12 @@ def display_customers(
         p_cols = st.columns([1, 1, 3, 1, 1])
         
         with p_cols[0]:
-            if st.button("◀◀", disabled=(page == 1), use_container_width=True, key="page_first"):
+            if st.button("◀◀", disabled=(page == 1), use_container_width=True, key="dialog_page_first"):
                 session_manager.set_dialog_page(1, pages)
                 st.rerun()
         
         with p_cols[1]:
-            if st.button("◀", disabled=(page == 1), use_container_width=True, key="page_prev"):
+            if st.button("◀", disabled=(page == 1), use_container_width=True, key="dialog_page_prev"):
                 session_manager.set_dialog_page(page - 1, pages)
                 st.rerun()
         
@@ -588,11 +595,11 @@ def display_customers(
             )
         
         with p_cols[3]:
-            if st.button("▶", disabled=(page == pages), use_container_width=True, key="page_next"):
+            if st.button("▶", disabled=(page == pages), use_container_width=True, key="dialog_page_next"):
                 session_manager.set_dialog_page(page + 1, pages)
                 st.rerun()
         
         with p_cols[4]:
-            if st.button("▶▶", disabled=(page == pages), use_container_width=True, key="page_last"):
+            if st.button("▶▶", disabled=(page == pages), use_container_width=True, key="dialog_page_last"):
                 session_manager.set_dialog_page(pages, pages)
                 st.rerun()

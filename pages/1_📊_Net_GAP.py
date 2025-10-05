@@ -11,9 +11,10 @@ Net GAP Analysis Page - Version 2.1 (Refactored)
 
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+import numpy as np
+from datetime import datetime, date, timedelta
 import logging
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, List, Tuple
 import io
 import time
 import os
@@ -489,9 +490,18 @@ def prepare_display_dataframe(
 def display_paginated_table(
     df: pd.DataFrame, 
     items_per_page: int,
-    session_manager
+    session_manager,
+    key_prefix: str = "main"
 ) -> None:
-    """Display paginated dataframe with SessionStateManager"""
+    """
+    Display paginated dataframe with SessionStateManager
+    
+    Args:
+        df: DataFrame to display
+        items_per_page: Number of items per page
+        session_manager: SessionStateManager instance
+        key_prefix: Unique prefix for widget keys to avoid conflicts
+    """
     if df.empty:
         st.info("No data matches the current filters")
         return
@@ -517,12 +527,12 @@ def display_paginated_table(
         col1, col2, col3, col4, col5 = st.columns([1, 1, 3, 1, 1])
         
         with col1:
-            if st.button("⏮️", disabled=(page == 1), use_container_width=True, key="page_first"):
+            if st.button("⏮️", disabled=(page == 1), use_container_width=True, key=f"{key_prefix}_page_first"):
                 session_manager.goto_first_page()
                 st.rerun()
         
         with col2:
-            if st.button("⬅️", disabled=(page == 1), use_container_width=True, key="page_prev"):
+            if st.button("⬅️", disabled=(page == 1), use_container_width=True, key=f"{key_prefix}_page_prev"):
                 session_manager.decrement_page(total_pages)
                 st.rerun()
         
@@ -536,12 +546,12 @@ def display_paginated_table(
             )
         
         with col4:
-            if st.button("➡️", disabled=(page == total_pages), use_container_width=True, key="page_next"):
+            if st.button("➡️", disabled=(page == total_pages), use_container_width=True, key=f"{key_prefix}_page_next"):
                 session_manager.increment_page(total_pages)
                 st.rerun()
         
         with col5:
-            if st.button("⏭️", disabled=(page == total_pages), use_container_width=True, key="page_last"):
+            if st.button("⏭️", disabled=(page == total_pages), use_container_width=True, key=f"{key_prefix}_page_last"):
                 session_manager.goto_last_page(total_pages)
                 st.rerun()
 
@@ -688,8 +698,8 @@ def display_data_table(
     if search_term:
         session_manager.reset_pagination()
     
-    # Display paginated table
-    display_paginated_table(display_df, items_per_page, session_manager)
+    # Display paginated table with unique key prefix
+    display_paginated_table(display_df, items_per_page, session_manager, key_prefix="main_table")
 
 
 def render_action_buttons(session_manager, filters) -> Tuple[bool, bool]:
@@ -754,7 +764,21 @@ def main():
     
     # Show customer dialog if needed
     if session_manager.show_customer_dialog():
-        # Set temporary data for dialog
+        # Prepare dialog data if not already prepared
+        shortage_ids, _ = session_manager.get_dialog_data()
+        
+        if not shortage_ids:
+            # Dialog was triggered but data not prepared
+            # This happens when View Details button is clicked
+            # Prepare the data now
+            gap_df_filtered, _ = session_manager.get_gap_results()
+            if gap_df_filtered is not None and not gap_df_filtered.empty:
+                customer_dialog.show_dialog(
+                    gap_df_filtered,
+                    st.session_state.get('_temp_demand_df')
+                )
+        
+        # Show the popup if data is available
         if '_temp_calculator' in st.session_state:
             show_customer_popup()
     
@@ -844,13 +868,27 @@ def main():
             gap_df_filtered, metrics = session_manager.get_gap_results()
             include_safety = filter_values.get('include_safety_stock', False)
             
-            # Ensure demand_df is available for dialog
-            if '_temp_demand_df' not in st.session_state:
-                # If demand_df not cached, need to reload for dialog
-                _, demand_df, _ = load_data_with_timing(data_loader, filter_values)
-                st.session_state['_temp_demand_df'] = demand_df
+            # Always reload demand_df for dialog functionality
+            # This is lightweight compared to full GAP calculation
+            if '_temp_demand_df' not in st.session_state or st.session_state.get('_temp_demand_df') is None:
+                with st.spinner("Loading customer data..."):
+                    _, demand_df, _ = load_data_with_timing(data_loader, filter_values)
+                    st.session_state['_temp_demand_df'] = demand_df
+                    logger.info("Demand data reloaded for dialog support")
             
             logger.info(f"Using cached GAP results: {len(gap_df_filtered)} items")
+        
+        # Always ensure temporary data is available for dialogs and interactions
+        # Set these after calculation or cache retrieval
+        st.session_state['_temp_calculator'] = calculator
+        st.session_state['_temp_formatter'] = formatter
+        st.session_state['_temp_gap_df'] = gap_df_filtered
+        
+        # Ensure demand_df is in temp state
+        if '_temp_demand_df' not in st.session_state or st.session_state.get('_temp_demand_df') is None:
+            with st.spinner("Loading customer data..."):
+                _, demand_df, _ = load_data_with_timing(data_loader, filter_values)
+                st.session_state['_temp_demand_df'] = demand_df
         
         # Display configuration summary
         config_text = f"""

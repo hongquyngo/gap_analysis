@@ -141,9 +141,14 @@ class GAPFilters:
         with col1:
             filters['entity'] = self._render_entity_filter()
         
-        # Get current date range from session
+        # Get current date range from session, or load from data if not set
         current_filters = self.session_manager.get_filters()
-        current_range = current_filters.get('date_range', self._get_data_date_range())
+        current_range = current_filters.get('date_range')
+        
+        # If date range is None (first load), get from data
+        if current_range is None:
+            current_range = self._get_data_date_range()
+            logger.info(f"Initialized date range from data: {current_range[0]} to {current_range[1]}")
         
         with col2:
             date_from = st.date_input(
