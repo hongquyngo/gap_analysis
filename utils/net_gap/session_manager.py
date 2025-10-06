@@ -71,15 +71,12 @@ class SessionStateManager:
     
     def _get_default_filters(self) -> Dict[str, Any]:
         """Get default filter configuration"""
-        # Note: date_range should be set by filters module from actual data
-        # Using None as placeholder to indicate it needs to be initialized
         return {
             'entity': None,
             'date_range': None,  # Will be set by filters from data
             'products': [],
             'brands': [],
             'customers': [],
-            'quick_filter': 'all',
             'group_by': 'product',
             'supply_sources': ['INVENTORY', 'CAN_PENDING', 'WAREHOUSE_TRANSFER', 'PURCHASE_ORDER'],
             'demand_sources': ['OC_PENDING'],
@@ -200,6 +197,7 @@ class SessionStateManager:
     def _hash_filters(self, filters: Dict[str, Any]) -> str:
         """
         Create a hash of filters for comparison
+        Only includes filters that affect GAP calculation
         
         Args:
             filters: Filter dictionary
@@ -207,7 +205,6 @@ class SessionStateManager:
         Returns:
             Hash string
         """
-        # Only hash the filters that affect calculation
         key_parts = [
             str(filters.get('entity')),
             str(filters.get('date_range')),
@@ -234,7 +231,6 @@ class SessionStateManager:
             page: Desired page number
             total_pages: Total number of pages available
         """
-        # Validate and constrain page number
         validated_page = max(1, min(page, total_pages))
         st.session_state[self.KEY_CURRENT_PAGE] = validated_page
         
@@ -244,24 +240,6 @@ class SessionStateManager:
     def reset_pagination(self) -> None:
         """Reset pagination to first page"""
         st.session_state[self.KEY_CURRENT_PAGE] = 1
-    
-    def increment_page(self, total_pages: int) -> None:
-        """Go to next page"""
-        current = self.get_current_page()
-        self.set_current_page(current + 1, total_pages)
-    
-    def decrement_page(self, total_pages: int) -> None:
-        """Go to previous page"""
-        current = self.get_current_page()
-        self.set_current_page(current - 1, total_pages)
-    
-    def goto_first_page(self) -> None:
-        """Go to first page"""
-        st.session_state[self.KEY_CURRENT_PAGE] = 1
-    
-    def goto_last_page(self, total_pages: int) -> None:
-        """Go to last page"""
-        st.session_state[self.KEY_CURRENT_PAGE] = total_pages
     
     # Customer Dialog Management
     def show_customer_dialog(self) -> bool:
@@ -284,7 +262,6 @@ class SessionStateManager:
     
     def close_customer_dialog(self) -> None:
         """Close customer dialog and cleanup state"""
-        # Clear dialog state
         keys_to_clear = [
             self.KEY_SHOW_CUSTOMER_DIALOG,
             self.KEY_DIALOG_SHORTAGE_IDS,

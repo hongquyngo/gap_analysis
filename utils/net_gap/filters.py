@@ -5,7 +5,7 @@ Filter components module for GAP Analysis System - Version 2.1 (Refactored)
 - Integrated with SessionStateManager for centralized state management
 - Converts lists to tuples for stable cache keys
 - Improved validation and error handling
-- Context-aware quick filters
+- Moved quick filter to post-calculation (table display)
 """
 
 import streamlit as st
@@ -23,22 +23,20 @@ logger = logging.getLogger(__name__)
 DEFAULT_DATE_RANGE_DAYS = 30
 MAX_MULTISELECT_DISPLAY = 200
 
-# Quick filter options (adapt based on safety stock)
+# Quick filter options (used in table display, not pre-calculation)
 QUICK_FILTER_BASE = {
-    'all': 'All Items',
-    'shortage': 'Shortage',
-    'critical': 'Critical',
-    'balanced': 'Balanced',
-    'surplus': 'Surplus'
+    'all': {'label': 'All Items', 'help': 'Show all products in the analysis'},
+    'shortage': {'label': 'Shortage', 'help': 'Products with supply below demand (coverage < 90%)'},
+    'balanced': {'label': 'Balanced', 'help': 'Products with balanced supply and demand (90-110% coverage)'},
+    'surplus': {'label': 'Surplus', 'help': 'Products with excess inventory (coverage > 110%)'}
 }
 
 QUICK_FILTER_SAFETY = {
-    'all': 'All Items',
-    'shortage': 'Below Requirements',
-    'critical': 'Safety Breach',
-    'balanced': 'Balanced',
-    'surplus': 'Surplus',
-    'reorder': 'At Reorder Point'
+    'all': {'label': 'All Items', 'help': 'Show all products in the analysis'},
+    'shortage': {'label': 'Below Requirements', 'help': 'Products below demand or safety stock requirements'},
+    'balanced': {'label': 'Balanced', 'help': 'Products meeting both demand and safety requirements'},
+    'surplus': {'label': 'Surplus', 'help': 'Products with excess inventory above safety levels'},
+    'reorder': {'label': 'At Reorder Point', 'help': 'Products at or below reorder point - create POs now'}
 }
 
 GROUP_BY_OPTIONS = {
@@ -102,7 +100,7 @@ class GAPFilters:
     
     def render_filters(self) -> Dict[str, Any]:
         """
-        Render all filter components in a single, streamlined interface
+        Render all filter components for pre-calculation configuration
         
         Returns:
             Dictionary containing all filter selections with tuples for cache stability
@@ -125,8 +123,8 @@ class GAPFilters:
             
             st.divider()
             
-            # Analysis options
-            self._render_analysis_options(filters)
+            # Group by selection (quick filter moved to table display)
+            self._render_group_by(filters)
         
         # Validate and save to session state
         filters = self._validate_and_convert_filters(filters)
@@ -270,56 +268,28 @@ class GAPFilters:
             st.markdown("**Customers**")
             filters['customers'] = self._render_customer_multiselect(filters.get('entity'))
     
-    def _render_analysis_options(self, filters: Dict[str, Any]) -> None:
-        """Render analysis options including quick filters and grouping"""
-        col1, col2 = st.columns([3, 2])
+    def _render_group_by(self, filters: Dict[str, Any]) -> None:
+        """Render group by selection only (quick filter moved to table display)"""
+        st.markdown("**Group By**")
         
-        with col1:
-            st.markdown("**Quick Filter**")
-            current_filters = self.session_manager.get_filters()
-            
-            # Use appropriate filter options based on safety stock
-            if filters.get('include_safety_stock', False):
-                filter_options = QUICK_FILTER_SAFETY
-            else:
-                filter_options = QUICK_FILTER_BASE
-            
-            # Get current selection index
-            current_quick_filter = current_filters.get('quick_filter', 'all')
-            try:
-                current_index = list(filter_options.keys()).index(current_quick_filter)
-            except ValueError:
-                current_index = 0
-            
-            filters['quick_filter'] = st.radio(
-                "Quick filter",
-                options=list(filter_options.keys()),
-                format_func=lambda x: f"🔍 {filter_options[x]}",
-                index=current_index,
-                horizontal=True,
-                label_visibility="collapsed",
-                key="quick_filter_radio"
-            )
+        current_filters = self.session_manager.get_filters()
+        current_group_by = current_filters.get('group_by', 'product')
         
-        with col2:
-            st.markdown("**Group By**")
-            current_filters = self.session_manager.get_filters()
-            current_group_by = current_filters.get('group_by', 'product')
-            
-            try:
-                group_by_index = list(GROUP_BY_OPTIONS.keys()).index(current_group_by)
-            except ValueError:
-                group_by_index = 0
-            
-            filters['group_by'] = st.radio(
-                "Group by",
-                options=list(GROUP_BY_OPTIONS.keys()),
-                format_func=lambda x: f"📊 {GROUP_BY_OPTIONS[x]}",
-                index=group_by_index,
-                horizontal=True,
-                label_visibility="collapsed",
-                key="group_by_radio"
-            )
+        try:
+            group_by_index = list(GROUP_BY_OPTIONS.keys()).index(current_group_by)
+        except ValueError:
+            group_by_index = 0
+        
+        filters['group_by'] = st.radio(
+            "Aggregate data by",
+            options=list(GROUP_BY_OPTIONS.keys()),
+            format_func=lambda x: f"📊 {GROUP_BY_OPTIONS[x]}",
+            index=group_by_index,
+            horizontal=True,
+            label_visibility="collapsed",
+            key="group_by_radio",
+            help="Product: detailed per-item analysis | Brand: aggregated by brand"
+        )
     
     def _render_entity_filter(self) -> Optional[str]:
         """Render entity selection filter with error handling"""
@@ -470,15 +440,6 @@ class GAPFilters:
             logger.warning(f"Invalid group_by: {filters.get('group_by')}, defaulting to 'product'")
             filters['group_by'] = 'product'
         
-        # Ensure quick_filter is valid
-        valid_quick_filters = ['all', 'shortage', 'critical', 'balanced', 'surplus']
-        if filters.get('include_safety_stock'):
-            valid_quick_filters.append('reorder')
-        
-        if filters.get('quick_filter') not in valid_quick_filters:
-            logger.warning(f"Invalid quick_filter: {filters.get('quick_filter')}, defaulting to 'all'")
-            filters['quick_filter'] = 'all'
-        
         # Ensure at least one source is selected
         if not filters.get('supply_sources'):
             logger.warning("No supply sources selected, defaulting to INVENTORY")
@@ -488,7 +449,6 @@ class GAPFilters:
             filters['demand_sources'] = ['OC_PENDING']
         
         # Convert lists to tuples for stable cache keys
-        # This is critical for proper caching in data_loader
         filters_converted = filters.copy()
         
         if filters.get('products'):
@@ -520,7 +480,7 @@ class GAPFilters:
         include_safety: bool = False
     ) -> pd.DataFrame:
         """
-        Apply quick filter preset to GAP dataframe
+        Apply quick filter preset to GAP dataframe (post-calculation)
         Context-aware based on safety stock inclusion
         
         Args:
@@ -541,10 +501,6 @@ class GAPFilters:
                     'SEVERE_SHORTAGE', 'HIGH_SHORTAGE', 'MODERATE_SHORTAGE', 
                     'BELOW_SAFETY', 'CRITICAL_BREACH'
                 ],
-                'critical': [
-                    'SEVERE_SHORTAGE', 'HIGH_SHORTAGE', 'CRITICAL_BREACH', 
-                    'BELOW_SAFETY', 'HAS_EXPIRED'
-                ],
                 'surplus': [
                     'SEVERE_SURPLUS', 'HIGH_SURPLUS', 'MODERATE_SURPLUS', 
                     'LIGHT_SURPLUS'
@@ -555,7 +511,6 @@ class GAPFilters:
         else:
             filter_mappings = {
                 'shortage': ['SEVERE_SHORTAGE', 'HIGH_SHORTAGE', 'MODERATE_SHORTAGE'],
-                'critical': ['SEVERE_SHORTAGE', 'HIGH_SHORTAGE'],
                 'surplus': [
                     'SEVERE_SURPLUS', 'HIGH_SURPLUS', 'MODERATE_SURPLUS', 
                     'LIGHT_SURPLUS'
@@ -613,14 +568,6 @@ class GAPFilters:
         if filters.get('customers'):
             summary_parts.append(f"Customers: {len(filters['customers'])}")
         
-        # Quick filter
-        if filters.get('quick_filter') != 'all':
-            if filters.get('include_safety_stock'):
-                filter_name = QUICK_FILTER_SAFETY.get(filters['quick_filter'], filters['quick_filter'])
-            else:
-                filter_name = QUICK_FILTER_BASE.get(filters['quick_filter'], filters['quick_filter'])
-            summary_parts.append(f"Filter: {filter_name}")
-        
         # Grouping
         group_by_name = GROUP_BY_OPTIONS.get(filters.get('group_by', 'product'), 'Product')
         summary_parts.append(f"By: {group_by_name}")
@@ -650,8 +597,6 @@ class GAPFilters:
         if filters.get('brands'):
             count += 1
         if filters.get('customers'):
-            count += 1
-        if filters.get('quick_filter') != 'all':
             count += 1
         if filters.get('include_safety_stock'):
             count += 1

@@ -7,6 +7,7 @@ Net GAP Analysis Page - Version 2.1 (Refactored)
 - Improved error handling with custom exceptions
 - Optimized data loading with tuple cache keys
 - Better memory management
+- Quick filter moved to table display (post-calculation)
 """
 
 import streamlit as st
@@ -42,7 +43,7 @@ from utils.net_gap.session_manager import get_session_manager
 from utils.net_gap.data_loader import GAPDataLoader, DataLoadError, ValidationError
 from utils.net_gap.calculator import GAPCalculator
 from utils.net_gap.formatters import GAPFormatter
-from utils.net_gap.filters import GAPFilters
+from utils.net_gap.filters import GAPFilters, QUICK_FILTER_BASE, QUICK_FILTER_SAFETY
 from utils.net_gap.charts import GAPCharts
 from utils.net_gap.customer_dialog import CustomerImpactDialog, show_customer_popup
 
@@ -146,8 +147,8 @@ def load_data_with_timing(
             entity_name=filter_values.get('entity'),
             date_from=filter_values.get('date_range')[0],
             date_to=filter_values.get('date_range')[1],
-            product_ids=filter_values.get('products_tuple'),  # Use tuple version
-            brands=filter_values.get('brands_tuple')  # Use tuple version
+            product_ids=filter_values.get('products_tuple'),
+            brands=filter_values.get('brands_tuple')
         )
         
         # Load demand data
@@ -155,9 +156,9 @@ def load_data_with_timing(
             entity_name=filter_values.get('entity'),
             date_from=filter_values.get('date_range')[0],
             date_to=filter_values.get('date_range')[1],
-            product_ids=filter_values.get('products_tuple'),  # Use tuple version
-            brands=filter_values.get('brands_tuple'),  # Use tuple version
-            customers=filter_values.get('customers_tuple')  # Use tuple version
+            product_ids=filter_values.get('products_tuple'),
+            brands=filter_values.get('brands_tuple'),
+            customers=filter_values.get('customers_tuple')
         )
         
         # Load safety stock if included
@@ -165,7 +166,7 @@ def load_data_with_timing(
         if include_safety:
             safety_stock_df = data_loader.load_safety_stock_data(
                 entity_name=filter_values.get('entity'),
-                product_ids=filter_values.get('products_tuple'),  # Use tuple version
+                product_ids=filter_values.get('products_tuple'),
                 include_customer_specific=True
             )
     
@@ -528,12 +529,12 @@ def display_paginated_table(
         
         with col1:
             if st.button("⏮️", disabled=(page == 1), use_container_width=True, key=f"{key_prefix}_page_first"):
-                session_manager.goto_first_page()
+                session_manager.set_current_page(1, total_pages)
                 st.rerun()
         
         with col2:
             if st.button("⬅️", disabled=(page == 1), use_container_width=True, key=f"{key_prefix}_page_prev"):
-                session_manager.decrement_page(total_pages)
+                session_manager.set_current_page(page - 1, total_pages)
                 st.rerun()
         
         with col3:
@@ -547,12 +548,12 @@ def display_paginated_table(
         
         with col4:
             if st.button("➡️", disabled=(page == total_pages), use_container_width=True, key=f"{key_prefix}_page_next"):
-                session_manager.increment_page(total_pages)
+                session_manager.set_current_page(page + 1, total_pages)
                 st.rerun()
         
         with col5:
             if st.button("⏭️", disabled=(page == total_pages), use_container_width=True, key=f"{key_prefix}_page_last"):
-                session_manager.goto_last_page(total_pages)
+                session_manager.set_current_page(total_pages, total_pages)
                 st.rerun()
 
 
@@ -562,9 +563,51 @@ def display_data_table(
     formatter: GAPFormatter, 
     metrics: Dict, 
     include_safety: bool,
-    session_manager
+    session_manager,
+    filters: GAPFilters
 ) -> None:
-    """Display the main data table with search, column selection, and export"""
+    """Display the main data table with quick filter, search, column selection, and export"""
+    
+    # Quick Filter Section (NEW LOCATION - moved from data configuration)
+    st.markdown("### 🔍 Quick Filter")
+    st.caption("Filter results without recalculating GAP")
+    
+    # Get appropriate filter options based on safety stock
+    if include_safety:
+        filter_options = QUICK_FILTER_SAFETY
+    else:
+        filter_options = QUICK_FILTER_BASE
+    
+    # Create radio buttons with format_func for labels
+    quick_filter = st.radio(
+        "Select filter view",
+        options=list(filter_options.keys()),
+        format_func=lambda x: filter_options[x]['label'],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="quick_filter_radio_post_calc",
+        help="Filter displayed results by status. Does not require recalculation."
+    )
+    
+    # Display tooltip for selected filter
+    selected_help = filter_options[quick_filter]['help']
+    st.caption(f"ℹ️ {selected_help}")
+    
+    # Reset pagination when filter changes
+    if st.session_state.get('_last_quick_filter') != quick_filter:
+        session_manager.reset_pagination()
+        st.session_state['_last_quick_filter'] = quick_filter
+    
+    # Apply quick filter immediately
+    original_count = len(gap_df)
+    if quick_filter != 'all':
+        gap_df = filters.apply_quick_filter(gap_df, quick_filter, include_safety)
+        filtered_count = len(gap_df)
+        if filtered_count < original_count:
+            filter_label = filter_options[quick_filter]['label']
+            st.info(f"📊 Showing {filtered_count:,} of {original_count:,} items ({filter_label})")
+    
+    st.divider()
     
     # Column configuration section
     with st.expander("⚙️ Table Configuration", expanded=False):
@@ -660,7 +703,7 @@ def display_data_table(
     
     with col1:
         search_term = st.text_input(
-            "🔍 Search in results", 
+            "🔎 Search in results", 
             placeholder="Type to filter...",
             key="table_search"
         )
@@ -769,8 +812,6 @@ def main():
         
         if not shortage_ids:
             # Dialog was triggered but data not prepared
-            # This happens when View Details button is clicked
-            # Prepare the data now
             gap_df_filtered, _ = session_manager.get_gap_results()
             if gap_df_filtered is not None and not gap_df_filtered.empty:
                 customer_dialog.show_dialog(
@@ -793,9 +834,6 @@ def main():
     calculate_clicked, force_recalc = render_action_buttons(session_manager, filters)
     
     # Check if we should show results
-    # Show results if:
-    # 1. Calculate button was clicked OR
-    # 2. GAP is already calculated and filters haven't changed
     should_recalculate = force_recalc or session_manager.should_recalculate(filter_values)
     has_results = session_manager.is_gap_calculated()
     
@@ -816,73 +854,58 @@ def main():
         # Determine if we need to calculate or use cached results
         if should_recalculate or not has_results:
             # Perform calculation
-            st.info("Calculating GAP analysis...")
-            
-            # Load data
-            supply_df, demand_df, safety_stock_df = load_data_with_timing(
-                data_loader, filter_values
-            )
-            
-            # Validate data
-            if not validate_data(supply_df, 'supply') or not validate_data(demand_df, 'demand'):
-                st.stop()
-            
-            # Check if data is available
-            if supply_df.empty and demand_df.empty:
-                st.warning(
-                    "No data available for the selected filters. "
-                    "Please adjust your filters and try again."
+            with st.spinner("🔄 Calculating GAP analysis..."):
+                # Load data
+                supply_df, demand_df, safety_stock_df = load_data_with_timing(
+                    data_loader, filter_values
                 )
-                st.stop()
-            
-            # Calculate GAP
-            gap_df = calculate_gap_with_progress(
-                calculator, supply_df, demand_df, safety_stock_df, filter_values
-            )
-            
-            # Apply quick filter (context-aware)
-            include_safety = filter_values.get('include_safety_stock', False)
-            gap_df_filtered = filters.apply_quick_filter(
-                gap_df, 
-                filter_values.get('quick_filter', 'all'),
-                include_safety=include_safety
-            )
-            
-            if gap_df_filtered.empty:
-                st.info("No items match the selected quick filter.")
-                st.stop()
-            
-            # Calculate metrics
-            metrics = calculator.get_summary_metrics(gap_df_filtered)
-            
-            # Store results in session manager
-            session_manager.set_gap_calculated(gap_df_filtered, metrics, filter_values)
-            
-            # Store raw data for dialog
-            st.session_state['_temp_demand_df'] = demand_df
-            
-            logger.info(f"GAP calculation completed and cached: {len(gap_df_filtered)} items")
+                
+                # Validate data
+                if not validate_data(supply_df, 'supply') or not validate_data(demand_df, 'demand'):
+                    st.stop()
+                
+                # Check if data is available
+                if supply_df.empty and demand_df.empty:
+                    st.warning(
+                        "No data available for the selected filters. "
+                        "Please adjust your filters and try again."
+                    )
+                    st.stop()
+                
+                # Calculate GAP (full dataset, no quick filter applied yet)
+                gap_df = calculate_gap_with_progress(
+                    calculator, supply_df, demand_df, safety_stock_df, filter_values
+                )
+                
+                # Calculate metrics on full dataset
+                metrics = calculator.get_summary_metrics(gap_df)
+                
+                # Store results in session manager (full dataset)
+                session_manager.set_gap_calculated(gap_df, metrics, filter_values)
+                
+                # Store raw data for dialog
+                st.session_state['_temp_demand_df'] = demand_df
+                
+                logger.info(f"GAP calculation completed and cached: {len(gap_df)} items")
         
         else:
             # Use cached results
-            gap_df_filtered, metrics = session_manager.get_gap_results()
+            gap_df, metrics = session_manager.get_gap_results()
             include_safety = filter_values.get('include_safety_stock', False)
             
             # Always reload demand_df for dialog functionality
-            # This is lightweight compared to full GAP calculation
             if '_temp_demand_df' not in st.session_state or st.session_state.get('_temp_demand_df') is None:
                 with st.spinner("Loading customer data..."):
                     _, demand_df, _ = load_data_with_timing(data_loader, filter_values)
                     st.session_state['_temp_demand_df'] = demand_df
                     logger.info("Demand data reloaded for dialog support")
             
-            logger.info(f"Using cached GAP results: {len(gap_df_filtered)} items")
+            logger.info(f"Using cached GAP results: {len(gap_df)} items")
         
         # Always ensure temporary data is available for dialogs and interactions
-        # Set these after calculation or cache retrieval
         st.session_state['_temp_calculator'] = calculator
         st.session_state['_temp_formatter'] = formatter
-        st.session_state['_temp_gap_df'] = gap_df_filtered
+        st.session_state['_temp_gap_df'] = gap_df
         
         # Ensure demand_df is in temp state
         if '_temp_demand_df' not in st.session_state or st.session_state.get('_temp_demand_df') is None:
@@ -891,6 +914,7 @@ def main():
                 st.session_state['_temp_demand_df'] = demand_df
         
         # Display configuration summary
+        include_safety = filter_values.get('include_safety_stock', False)
         config_text = f"""
         **Analysis Configuration:**
         - Supply: {', '.join(filter_values.get('supply_sources', []))}
@@ -906,11 +930,6 @@ def main():
         # Display KPI cards
         st.subheader("📈 Key Metrics")
         
-        # Set temporary data for customer dialog
-        st.session_state['_temp_calculator'] = calculator
-        st.session_state['_temp_formatter'] = formatter
-        st.session_state['_temp_gap_df'] = gap_df_filtered
-        
         charts.create_kpi_cards(
             metrics, 
             include_safety=include_safety,
@@ -921,15 +940,15 @@ def main():
         
         # Visualizations
         st.subheader("📊 Visual Analysis")
-        display_visualizations(gap_df_filtered, filter_values, charts, include_safety)
+        display_visualizations(gap_df, filter_values, charts, include_safety)
         
         st.divider()
         
-        # Detailed data table
+        # Detailed data table (with quick filter inside)
         st.subheader("📋 Detailed GAP Analysis")
         display_data_table(
-            gap_df_filtered, filter_values, formatter, 
-            metrics, include_safety, session_manager
+            gap_df, filter_values, formatter, 
+            metrics, include_safety, session_manager, filters
         )
         
     except (ValidationError, DataLoadError) as e:
