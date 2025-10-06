@@ -1,13 +1,10 @@
 # pages/1_📊_Net_GAP.py
 
 """
-Net GAP Analysis Page - Version 2.1 (Refactored)
-- Integrated SessionStateManager for centralized state management
-- Fixed critical bugs (entity ID mapping, pagination)
-- Improved error handling with custom exceptions
-- Optimized data loading with tuple cache keys
-- Better memory management
-- Quick filter moved to table display (post-calculation)
+Net GAP Analysis Page - Version 2.2
+- Fixed Coverage display (percentage format)
+- Added comprehensive tooltips and help information
+- Improved user guidance for calculated fields
 """
 
 import streamlit as st
@@ -46,11 +43,12 @@ from utils.net_gap.formatters import GAPFormatter
 from utils.net_gap.filters import GAPFilters, QUICK_FILTER_BASE, QUICK_FILTER_SAFETY
 from utils.net_gap.charts import GAPCharts
 from utils.net_gap.customer_dialog import CustomerImpactDialog, show_customer_popup
+from utils.net_gap.field_explanations import show_field_explanations, get_field_tooltip
 
 # Constants
 MAX_EXPORT_ROWS = 10000
 DATA_LOAD_WARNING_SECONDS = 5
-VERSION = "2.1"
+VERSION = "2.2"
 
 
 def initialize_components():
@@ -354,6 +352,45 @@ def display_visualizations(
             st.plotly_chart(fig_coverage, use_container_width=True)
 
 
+def format_coverage_value(row: pd.Series) -> str:
+    """
+    Format coverage ratio for better readability
+    
+    Args:
+        row: DataFrame row containing coverage_ratio, total_demand, total_supply
+        
+    Returns:
+        Formatted string representation
+    """
+    ratio = row.get('coverage_ratio', 0)
+    demand = row.get('total_demand', 0)
+    supply = row.get('total_supply', 0)
+    
+    # Special cases
+    if pd.isna(ratio):
+        return "—"
+    
+    if demand == 0:
+        if supply > 0:
+            return "No Demand"
+        else:
+            return "—"
+    
+    if supply == 0:
+        return "0%"
+    
+    # Convert to percentage
+    percentage = ratio * 100
+    
+    # Format based on value range
+    if percentage > 999:
+        return ">999%"
+    elif percentage < 1:
+        return f"{percentage:.1f}%"
+    else:
+        return f"{int(percentage)}%"
+
+
 def prepare_display_dataframe(
     gap_df: pd.DataFrame, 
     filter_values: Dict, 
@@ -400,14 +437,13 @@ def prepare_display_dataframe(
             lambda x: formatter.format_number(x, show_sign=True)
         )
     
+    # IMPROVED Coverage formatting
     if 'coverage_ratio' in display_df.columns:
-        display_df['Coverage'] = display_df['coverage_ratio'].apply(
-            lambda x: f"{x:.2f}x" if x < 10 else "999x+"
-        )
+        display_df['Coverage'] = display_df.apply(format_coverage_value, axis=1)
     
     if 'gap_percentage' in display_df.columns:
         display_df['GAP %'] = display_df['gap_percentage'].apply(
-            lambda x: f"{x:.1f}%" if pd.notna(x) else "N/A"
+            lambda x: f"{x:+.1f}%" if pd.notna(x) else "N/A"
         )
     
     # Safety stock columns (when included)
@@ -440,6 +476,17 @@ def prepare_display_dataframe(
     if 'suggested_action' in display_df.columns:
         display_df['Action'] = display_df['suggested_action']
     
+    # Format financial columns with currency
+    if 'at_risk_value_usd' in display_df.columns:
+        display_df['At Risk Value'] = display_df['at_risk_value_usd'].apply(
+            lambda x: formatter.format_currency(x, abbreviate=True)
+        )
+    
+    if 'gap_value_usd' in display_df.columns:
+        display_df['GAP Value'] = display_df['gap_value_usd'].apply(
+            lambda x: formatter.format_currency(x, abbreviate=True)
+        )
+    
     # Get selected columns from session manager
     col_config = session_manager.get_table_columns_config()
     columns = []
@@ -453,25 +500,21 @@ def prepare_display_dataframe(
     
     # Supply & Demand
     if col_config['supply']:
-        columns.extend(['Supply', 'Demand'])
+        columns.extend(['Supply', 'Demand', 'Net GAP'])
     
     # Safety Stock columns
     if col_config['safety'] and include_safety:
         if 'Safety Stock' in display_df.columns:
             columns.extend(['Safety Stock', 'Available', 'True GAP'])
-    elif not include_safety and 'Net GAP' in display_df.columns:
-        columns.append('Net GAP')
     
     # Analysis
     if col_config['analysis']:
-        columns.extend(['Coverage', 'Status', 'Action'])
+        columns.extend(['Coverage', 'GAP %', 'Status', 'Action'])
     
     # Financial
     if col_config['financial']:
-        if 'at_risk_value_usd' in display_df.columns:
-            columns.append('at_risk_value_usd')
-        if 'gap_value_usd' in display_df.columns:
-            columns.append('gap_value_usd')
+        financial_cols = ['At Risk Value', 'GAP Value']
+        columns.extend([c for c in financial_cols if c in display_df.columns])
     
     # Details
     if col_config['details']:
@@ -519,9 +562,26 @@ def display_paginated_table(
     start_idx = (page - 1) * items_per_page
     end_idx = min(start_idx + items_per_page, total_items)
     
-    # Display the data table
+    # Display the data table with tooltips
     page_df = df.iloc[start_idx:end_idx]
-    st.dataframe(page_df, use_container_width=True, hide_index=True)
+    
+    # Add column configuration with tooltips
+    column_config = {}
+    for col in page_df.columns:
+        tooltip = get_field_tooltip(col)
+        if tooltip:
+            column_config[col] = st.column_config.Column(
+                col,
+                help=tooltip,
+                width="medium"
+            )
+    
+    st.dataframe(
+        page_df, 
+        use_container_width=True, 
+        hide_index=True,
+        column_config=column_config
+    )
     
     # Pagination controls
     if total_pages > 1:
@@ -568,7 +628,7 @@ def display_data_table(
 ) -> None:
     """Display the main data table with quick filter, search, column selection, and export"""
     
-    # Quick Filter Section (NEW LOCATION - moved from data configuration)
+    # Quick Filter Section
     st.markdown("### 🔍 Quick Filter")
     st.caption("Filter results without recalculating GAP")
     
@@ -609,6 +669,19 @@ def display_data_table(
     
     st.divider()
     
+    # Help Section for Field Explanations - Create as a separate button/dialog
+    help_col1, help_col2, help_col3 = st.columns([1, 3, 1])
+    with help_col1:
+        if st.button("📐 View Formulas", use_container_width=True, key="show_formulas_btn"):
+            st.session_state['show_formulas'] = not st.session_state.get('show_formulas', False)
+    
+    # Show formulas section if button clicked
+    if st.session_state.get('show_formulas', False):
+        with st.container():
+            st.divider()
+            show_field_explanations(include_safety)
+            st.divider()
+    
     # Column configuration section
     with st.expander("⚙️ Table Configuration", expanded=False):
         st.markdown("**Select columns to display:**")
@@ -640,7 +713,7 @@ def display_data_table(
                     "Safety Stock", 
                     value=col_config['safety'],
                     key="col_safety_check",
-                    help="Safety Stock, Available, True GAP"
+                    help="Safety Stock, Available Supply, True GAP"
                 )
             else:
                 new_config['safety'] = False
@@ -649,7 +722,7 @@ def display_data_table(
                 "Analysis", 
                 value=col_config['analysis'],
                 key="col_analysis_check",
-                help="Coverage, Status, Action"
+                help="Coverage, GAP %, Status, Action"
             )
         
         with col3:
@@ -657,13 +730,13 @@ def display_data_table(
                 "Financial", 
                 value=col_config['financial'],
                 key="col_financial_check",
-                help="At Risk Value, GAP Value"
+                help="At Risk Value, GAP Value in USD"
             )
             new_config['details'] = st.checkbox(
                 "Details", 
                 value=col_config['details'],
                 key="col_details_check",
-                help="Individual supply/demand sources"
+                help="Individual supply/demand source breakdowns"
             )
         
         # Update config in session manager
@@ -741,7 +814,7 @@ def display_data_table(
     if search_term:
         session_manager.reset_pagination()
     
-    # Display paginated table with unique key prefix
+    # Display paginated table with tooltips
     display_paginated_table(display_df, items_per_page, session_manager, key_prefix="main_table")
 
 
