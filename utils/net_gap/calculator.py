@@ -5,6 +5,7 @@ Calculator module for GAP Analysis System - Version 2.0
 - Integrated safety stock calculations
 - Single unified GAP metric that adapts based on safety stock
 - Context-aware status classification
+- Fixed datetime comparison issues
 """
 
 import pandas as pd
@@ -159,12 +160,14 @@ class GAPCalculator:
         
         supply_df = supply_df.copy()
         
-        # Filter out expired items
-        today = pd.Timestamp.now().date()
+        # Filter out expired items - FIXED: Use consistent datetime types
+        today = pd.Timestamp.now().normalize()  # Keep as Timestamp for comparison
         if 'expiry_date' in supply_df.columns:
+            # Convert expiry_date to datetime and compare
+            supply_df['expiry_date'] = pd.to_datetime(supply_df['expiry_date'], errors='coerce')
             supply_df = supply_df[
                 (supply_df['expiry_date'].isna()) | 
-                (pd.to_datetime(supply_df['expiry_date']).dt.date > today)
+                (supply_df['expiry_date'] > today)
             ].copy()
         
         # Create aggregation dictionary
