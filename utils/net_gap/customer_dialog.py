@@ -1,11 +1,11 @@
 # utils/net_gap/customer_dialog.py
 
 """
-Customer Affected Dialog for GAP Analysis System - Version 2.2 FIXED
-- Fixed terminology: consistent use of "affected" instead of "impacted"
-- Fixed customer count mismatch between KPI and dialog
-- Uses same filtered demand data as calculator
-- Consistent deduplication logic
+Customer Affected Dialog for GAP Analysis System - Version 2.3
+- Fixed customer data persistence and count mismatch
+- Added comprehensive tooltips and calculation explanations
+- Fixed nested expander issue using tabs
+- Improved session state handling
 """
 
 import streamlit as st
@@ -139,8 +139,8 @@ class CustomerAffectedDialog:
             
             # Log data stats for debugging
             logger.info(f"Demand data stats: {len(demand_df)} total records, "
-                    f"{demand_df['product_id'].nunique()} unique products, "
-                    f"{demand_df['customer'].nunique()} unique customers")
+                       f"{demand_df['product_id'].nunique()} unique products, "
+                       f"{demand_df['customer'].nunique()} unique customers")
             
             # Build shortage lookup dictionary
             if gap_df is not None and not gap_df.empty:
@@ -287,8 +287,7 @@ class CustomerAffectedDialog:
             logger.error(f"Error calculating customer affected data: {e}", exc_info=True)
             st.error(f"Failed to calculate customer affected data: {str(e)}")
             return pd.DataFrame()
-
-
+    
     def export_excel(self, df: pd.DataFrame) -> Optional[bytes]:
         """
         Export customer affected data to Excel
@@ -366,13 +365,11 @@ class CustomerAffectedDialog:
             st.error(f"Failed to export: {str(e)}")
             return None
 
-# Updated show_customer_popup function with comprehensive tooltips
-
 @st.dialog("Affected Customer Analysis", width="large")
 def show_customer_popup():
     """
-    Customer affected popup dialog with calculation tooltips
-    Enhanced with formula explanations for all metrics
+    Customer affected popup dialog
+    Tooltips removed (calculation details explained in separate tab)
     """
     session_manager = get_session_manager()
     
@@ -476,114 +473,39 @@ def show_customer_popup():
             st.rerun()
         return
     
-    # Header with info icon
-    col_title, col_help = st.columns([5, 1])
-    with col_title:
-        st.markdown("### Customer Affected Analysis")
-        st.caption("Customers affected by product shortages")
-    with col_help:
-        with st.popover("ℹ️ How metrics are calculated", use_container_width=True):
-            st.markdown("""
-            **Calculation Formulas:**
-            
-            📊 **Customer Shortage Allocation:**
-            ```
-            Demand Share = Customer Demand ÷ Total Product Demand
-            Customer Shortage = Product Shortage × Demand Share
-            ```
-            
-            💰 **At Risk Value:**
-            ```
-            At Risk Value = Order Value × (Shortage ÷ Demand)
-            ```
-            
-            📈 **Coverage:**
-            ```
-            Coverage % = (Available Supply ÷ Total Demand) × 100
-            ```
-            
-            🚨 **Urgency Levels:**
-            - **OVERDUE**: Required date has passed
-            - **URGENT**: Required within 7 days
-            - **UPCOMING**: Required within 30 days
-            - **FUTURE**: Required after 30 days
-            
-            **Allocation Principle:** Fair share - each customer receives shortage proportional to their demand
-            """)
-    
-    # Summary metrics with tooltips (6 columns)
+    # Header
+    st.markdown("### Customer Affected Analysis")
+    st.caption("Customers affected by product shortages")
+
+    # Summary metrics (no tooltips)
     cols = st.columns(6)
-    
     with cols[0]:
-        st.metric(
-            "Customers", 
-            formatter.format_number(len(customer_data)),
-            help="Unique customers with demand for shortage products"
-        )
-    
+        st.metric("Customers", formatter.format_number(len(customer_data)))
     with cols[1]:
-        st.metric(
-            "Products", 
-            formatter.format_number(customer_data['product_count'].sum()),
-            help="Total unique products affected across all customers"
-        )
-    
+        st.metric("Products", formatter.format_number(customer_data['product_count'].sum()))
     with cols[2]:
         total_demand = customer_data['total_demand_value'].sum()
-        st.metric(
-            "Total Demand",
-            formatter.format_currency(total_demand, abbreviate=True),
-            help="Sum of all order values for affected products"
-        )
-    
+        st.metric("Total Demand", formatter.format_currency(total_demand, abbreviate=True))
     with cols[3]:
         at_risk_total = customer_data['at_risk_value'].sum()
-        st.metric(
-            "Value at Risk",
-            formatter.format_currency(at_risk_total, abbreviate=True),
-            help="Potential revenue loss = Σ(Order Value × Shortage%)"
-        )
-    
+        st.metric("Value at Risk", formatter.format_currency(at_risk_total, abbreviate=True))
     with cols[4]:
-        st.metric(
-            "Total Shortage", 
-            formatter.format_number(customer_data['total_shortage'].sum()),
-            help="Total quantity that cannot be fulfilled"
-        )
-    
+        st.metric("Total Shortage", formatter.format_number(customer_data['total_shortage'].sum()))
     with cols[5]:
         urgent = len(customer_data[customer_data['urgency'].isin(['OVERDUE', 'URGENT'])])
         if urgent > 0:
-            st.metric(
-                "Urgent", 
-                urgent, 
-                delta="Need attention", 
-                delta_color="inverse",
-                help="Customers with overdue or urgent orders (≤7 days)"
-            )
+            st.metric("Urgent", urgent, delta="Need attention", delta_color="inverse")
         else:
-            st.metric("Urgent", "0", help="No urgent orders")
+            st.metric("Urgent", "0")
     
     st.divider()
     
     # Controls
     ctrl_cols = st.columns([3, 1, 1])
-    
     with ctrl_cols[0]:
-        search = st.text_input(
-            "Search", 
-            placeholder="Customer name or code...", 
-            key="dlg_search"
-        )
-    
+        search = st.text_input("Search", placeholder="Customer name or code...", key="dlg_search")
     with ctrl_cols[1]:
-        page_size = st.selectbox(
-            "Show", 
-            ITEMS_PER_PAGE_OPTIONS, 
-            index=1, 
-            key="dlg_size"
-        )
-    
+        page_size = st.selectbox("Show", ITEMS_PER_PAGE_OPTIONS, index=1, key="dlg_size")
     with ctrl_cols[2]:
         excel = dialog.export_excel(customer_data)
         if excel:
@@ -608,260 +530,136 @@ def show_customer_popup():
         st.info("No matches found")
     else:
         st.divider()
-        display_customers_with_tooltips(filtered, page_size, formatter, session_manager)
+        display_customers_no_tooltips(filtered, page_size, formatter, session_manager)
     
     # Footer
     st.divider()
     if st.button("Close", use_container_width=True, type="primary"):
-        # Clean up temporary data
         for key in ['_temp_calculator', '_temp_formatter', '_temp_gap_df']:
             if key in st.session_state:
                 del st.session_state[key]
-        
         session_manager.close_customer_dialog()
         st.rerun()
 
-def display_customers_with_tooltips(
-    data: pd.DataFrame, 
-    page_size: int, 
-    formatter,
-    session_manager
-) -> None:
+
+def display_customers_no_tooltips(data: pd.DataFrame, page_size: int, formatter, session_manager) -> None:
     """
-    Display customer list with enhanced tooltips for all metrics
-    FIXED: No nested expanders
-    
-    Args:
-        data: Customer affected data
-        page_size: Number of items per page
-        formatter: GAPFormatter instance
-        session_manager: SessionStateManager instance
+    Display customer list (tooltips removed)
     """
     total = len(data)
     pages = max(1, (total + page_size - 1) // page_size)
     
-    # Get and validate current page
     page = session_manager.get_dialog_page()
     session_manager.set_dialog_page(page, pages)
     page = session_manager.get_dialog_page()
     
     start = (page - 1) * page_size
     end = min(start + page_size, total)
-    
-    # Current page data
     page_data = data.iloc[start:end]
     
     st.caption(f"**Showing {start + 1}-{end} of {total} customers**")
     
-    # Display each customer
-    for idx, row in page_data.iterrows():
-        # Urgency indicator
-        urgency_icons = {
-            'OVERDUE': '🔴',
-            'URGENT': '🟠',
-            'UPCOMING': '🟡',
-            'FUTURE': '🟢'
-        }
+    urgency_icons = {
+        'OVERDUE': '🔴',
+        'URGENT': '🟠',
+        'UPCOMING': '🟡',
+        'FUTURE': '🟢'
+    }
+    
+    for _, row in page_data.iterrows():
         icon = urgency_icons.get(row['urgency'], '⚪')
-        
-        with st.expander(
-            f"{icon} **{row['customer']}** ({row['customer_code']}) - "
-            f"{row['product_count']} products affected",
-            expanded=False
-        ):
-            # Metrics row with tooltips
+        with st.expander(f"{icon} **{row['customer']}** ({row['customer_code']}) - {row['product_count']} products affected", expanded=False):
             m_cols = st.columns(5)
-            
             with m_cols[0]:
-                st.metric(
-                    "Required", 
-                    formatter.format_number(row['total_required']),
-                    help="Total quantity ordered by this customer"
-                )
-            
+                st.metric("Required", formatter.format_number(row['total_required']))
             with m_cols[1]:
-                shortage_pct = (row['total_shortage'] / row['total_required'] * 100) if row['total_required'] > 0 else 0
-                st.metric(
-                    "Shortage", 
-                    formatter.format_number(row['total_shortage']),
-                    help=f"Cannot fulfill: {shortage_pct:.1f}% of total demand\n"
-                         f"Formula: Σ(Product Shortage × Demand Share)"
-                )
-            
+                st.metric("Shortage", formatter.format_number(row['total_shortage']))
             with m_cols[2]:
-                st.metric(
-                    "Demand Value", 
-                    formatter.format_currency(row['total_demand_value']),
-                    help="Total value of all orders from this customer"
-                )
-            
+                st.metric("Demand Value", formatter.format_currency(row['total_demand_value']))
             with m_cols[3]:
-                risk_pct = (row['at_risk_value'] / row['total_demand_value'] * 100) if row['total_demand_value'] > 0 else 0
-                st.metric(
-                    "At Risk", 
-                    formatter.format_currency(row['at_risk_value']),
-                    help=f"Potential revenue loss: {risk_pct:.1f}% of demand value\n"
-                         f"Formula: Σ(Order Value × Shortage/Demand)"
-                )
-            
+                st.metric("At Risk", formatter.format_currency(row['at_risk_value']))
             with m_cols[4]:
-                urgency_desc = {
-                    'OVERDUE': 'Orders are past due date',
-                    'URGENT': 'Orders needed within 7 days',
-                    'UPCOMING': 'Orders needed within 30 days',
-                    'FUTURE': 'Orders needed after 30 days'
-                }
-                st.metric(
-                    "Urgency", 
-                    row['urgency'],
-                    help=urgency_desc.get(row['urgency'], 'Based on earliest required date')
-                )
+                st.metric("Urgency", row['urgency'])
             
             st.divider()
-            
-            # Tabs for Product Details and Calculation Details
             tab1, tab2 = st.tabs(["📦 Affected Products", "📊 Calculation Details"])
             
             with tab1:
-                # Product table with column headers and tooltips
                 st.caption("**Product-level breakdown:**")
-                
-                # Header with tooltips
                 h_cols = st.columns([0.3, 2, 1, 1, 1, 1, 0.8])
+                for h in ["#", "Product", "Required", "Shortage", "At Risk", "Coverage", "Urgency"]:
+                    h_cols.pop(0).caption(h)
                 
-                with h_cols[0]:
-                    st.caption("#")
-                with h_cols[1]:
-                    st.caption("Product", help="Product code and name")
-                with h_cols[2]:
-                    st.caption("Required", help="Customer's demand quantity")
-                with h_cols[3]:
-                    st.caption("Shortage", help="Allocated shortage = Total Shortage × (Customer Demand/Total Demand)")
-                with h_cols[4]:
-                    st.caption("At Risk", help="Value at risk = Order Value × (Shortage/Demand)")
-                with h_cols[5]:
-                    st.caption("Coverage", help="Supply availability = (Available Supply/Total Demand) × 100")
-                with h_cols[6]:
-                    st.caption("Urgency", help="Based on required delivery date")
-                
-                # Products with detailed tooltips
                 products = row['products'][:MAX_PRODUCTS_PER_CUSTOMER]
                 for i, prod in enumerate(products, 1):
                     p_cols = st.columns([0.3, 2, 1, 1, 1, 1, 0.8])
-                    
                     with p_cols[0]:
                         st.text(str(i))
-                    
                     with p_cols[1]:
-                        # Product info with hover details
                         st.text(prod['pt_code'])
                         st.caption(prod['product_name'][:30])
-                    
                     with p_cols[2]:
-                        # Required quantity
                         st.text(formatter.format_number(prod['required_quantity']))
-                    
                     with p_cols[3]:
-                        # Shortage with percentage
-                        shortage_pct = (prod['shortage_quantity'] / prod['required_quantity'] * 100) if prod['required_quantity'] > 0 else 0
                         st.text(formatter.format_number(prod['shortage_quantity']))
-                        if shortage_pct > 0:
-                            st.caption(f"({shortage_pct:.0f}% short)", help="Percentage of demand that cannot be fulfilled")
-                    
                     with p_cols[4]:
-                        # At risk value
                         st.text(formatter.format_currency(prod['at_risk_value'], abbreviate=True))
-                    
                     with p_cols[5]:
-                        # Coverage with color coding
                         cov = prod['coverage']
                         cov_text = f"{cov:.0f}%"
-                        cov_help = f"Product has {cov:.0f}% of required supply available"
-                        
                         if cov < 50:
-                            st.markdown(f"🔴 **{cov_text}**", help=cov_help)
+                            st.markdown(f"🔴 **{cov_text}**")
                         elif cov < 80:
-                            st.markdown(f"🟡 **{cov_text}**", help=cov_help)
+                            st.markdown(f"🟡 **{cov_text}**")
                         else:
-                            st.markdown(f"🟢 **{cov_text}**", help=cov_help)
-                    
+                            st.markdown(f"🟢 **{cov_text}**")
                     with p_cols[6]:
-                        # Urgency icon with tooltip
                         urg = prod['urgency']
                         urg_icon = urgency_icons.get(urg, '⚪')
-                        urg_help = {
-                            'OVERDUE': 'Past due date',
-                            'URGENT': 'Due in ≤7 days',
-                            'UPCOMING': 'Due in ≤30 days',
-                            'FUTURE': 'Due in >30 days'
-                        }
-                        st.markdown(urg_icon, help=urg_help.get(urg, urg))
+                        st.markdown(urg_icon)
                 
                 if len(row['products']) > MAX_PRODUCTS_PER_CUSTOMER:
-                    st.caption(
-                        f"... and {len(row['products']) - MAX_PRODUCTS_PER_CUSTOMER} more products"
-                    )
+                    st.caption(f"... and {len(row['products']) - MAX_PRODUCTS_PER_CUSTOMER} more products")
             
             with tab2:
-                # Calculation details without nested expander
+                # Keep full detail explanation
                 st.markdown(f"""
                 **How these numbers are calculated:**
-                
-                ### 1️⃣ **Shortage Allocation** 
-                This customer demands **{formatter.format_number(row['total_required'])}** units across **{row['product_count']}** products.
-                
-                Based on **fair-share allocation**, they receive shortage proportional to their demand:
+
+                ### 1️⃣ Shortage Allocation
+                Customer requires **{formatter.format_number(row['total_required'])}** units across **{row['product_count']}** products.
+
+                Based on fair-share allocation:
                 ```
                 Customer Shortage = Product Shortage × (Customer Demand / Total Product Demand)
                 ```
-                
-                ### 2️⃣ **At Risk Value**
+
+                ### 2️⃣ At Risk Value
                 - Total order value: **{formatter.format_currency(row['total_demand_value'])}**
-                - Cannot fulfill: **{formatter.format_number(row['total_shortage'])}** units
-                - At risk: **{formatter.format_currency(row['at_risk_value'])}** 
-                  ({(row['at_risk_value']/row['total_demand_value']*100) if row['total_demand_value'] > 0 else 0:.1f}% of total)
-                
-                ```
-                At Risk = Order Value × (Shortage Quantity / Required Quantity)
-                ```
-                
-                ### 3️⃣ **Coverage Calculation**
-                Coverage shows the percentage of demand that can be fulfilled:
+                - Unfulfilled quantity: **{formatter.format_number(row['total_shortage'])}**
+                - At risk: **{formatter.format_currency(row['at_risk_value'])}**
+
+                ### 3️⃣ Coverage
                 ```
                 Coverage % = (Available Supply / Total Demand) × 100
                 ```
-                
-                ### 4️⃣ **Urgency Levels**
-                - 🔴 **OVERDUE**: Required date has passed
-                - 🟠 **URGENT**: Required within 7 days
-                - 🟡 **UPCOMING**: Required within 30 days
-                - 🟢 **FUTURE**: Required after 30 days
-                
-                ### 5️⃣ **Demand Sources**
-                Orders from: **{row['sources']}**
-                
-                ---
-                *Note: The allocation principle ensures fairness - each customer receives shortage proportional to their demand share.*
+
+                ### 4️⃣ Urgency
+                🔴 Overdue | 🟠 Urgent | 🟡 Upcoming | 🟢 Future
+
+                ### 5️⃣ Demand Sources
+                {row['sources']}
                 """)
     
-    # Pagination controls
     if pages > 1:
         st.divider()
         pag_cols = st.columns([1, 3, 1])
-        
         with pag_cols[0]:
             if st.button("Previous", disabled=(page == 1), use_container_width=True, key="dlg_prev"):
                 session_manager.set_dialog_page(page - 1, pages)
                 st.rerun()
-        
         with pag_cols[1]:
-            st.markdown(
-                f"<div style='text-align: center; padding: 8px;'>"
-                f"Page {page} of {pages}"
-                f"</div>",
-                unsafe_allow_html=True
-            )
-        
+            st.markdown(f"<div style='text-align: center; padding: 8px;'>Page {page} of {pages}</div>", unsafe_allow_html=True)
         with pag_cols[2]:
             if st.button("Next", disabled=(page == pages), use_container_width=True, key="dlg_next"):
                 session_manager.set_dialog_page(page + 1, pages)
