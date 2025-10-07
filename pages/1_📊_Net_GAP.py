@@ -1,10 +1,11 @@
 # pages/1_📊_Net_GAP.py
 
 """
-Net GAP Analysis Page - Version 2.2
-- Fixed Coverage display (percentage format)
-- Added comprehensive tooltips and help information
-- Improved user guidance for calculated fields
+Net GAP Analysis Page - Version 2.4 FIXED
+- Fixed customer dialog data persistence issue
+- Improved session state management
+- Better error handling and validation
+- Consistent data flow from calculation to dialogs
 """
 
 import streamlit as st
@@ -42,13 +43,13 @@ from utils.net_gap.calculator import GAPCalculator
 from utils.net_gap.formatters import GAPFormatter
 from utils.net_gap.filters import GAPFilters, QUICK_FILTER_BASE, QUICK_FILTER_SAFETY
 from utils.net_gap.charts import GAPCharts
-from utils.net_gap.customer_dialog import CustomerImpactDialog, show_customer_popup
+from utils.net_gap.customer_dialog import CustomerAffectedDialog, show_customer_popup
 from utils.net_gap.field_explanations import show_field_explanations, get_field_tooltip
 
 # Constants
 MAX_EXPORT_ROWS = 10000
 DATA_LOAD_WARNING_SECONDS = 5
-VERSION = "2.2"
+VERSION = "2.4"
 
 
 def initialize_components():
@@ -59,7 +60,7 @@ def initialize_components():
     formatter = GAPFormatter()
     filters = GAPFilters(data_loader)
     charts = GAPCharts(formatter)
-    customer_dialog = CustomerImpactDialog(calculator, formatter)
+    customer_dialog = CustomerAffectedDialog(calculator, formatter)
     
     return session_manager, data_loader, calculator, formatter, filters, charts, customer_dialog
 
@@ -437,7 +438,7 @@ def prepare_display_dataframe(
             lambda x: formatter.format_number(x, show_sign=True)
         )
     
-    # IMPROVED Coverage formatting
+    # Coverage formatting
     if 'coverage_ratio' in display_df.columns:
         display_df['Coverage'] = display_df.apply(format_coverage_value, axis=1)
     
@@ -613,7 +614,7 @@ def display_paginated_table(
         
         with col5:
             if st.button("⏭️", disabled=(page == total_pages), use_container_width=True, key=f"{key_prefix}_page_last"):
-                session_manager.set_current_page(total_pages, total_pages)
+                session_manager.set_dialog_page(total_pages, total_pages)
                 st.rerun()
 
 
@@ -669,10 +670,10 @@ def display_data_table(
     
     st.divider()
     
-    # Help Section for Field Explanations - Create as a separate button/dialog
+    # Help Section for Field Explanations
     help_col1, help_col2, help_col3 = st.columns([1, 3, 1])
     with help_col1:
-        if st.button("📐 View Formulas", use_container_width=True, key="show_formulas_btn"):
+        if st.button("📖 View Formulas", use_container_width=True, key="show_formulas_btn"):
             st.session_state['show_formulas'] = not st.session_state.get('show_formulas', False)
     
     # Show formulas section if button clicked
@@ -855,7 +856,7 @@ def render_action_buttons(session_manager, filters) -> Tuple[bool, bool]:
 
 
 def main():
-    """Main application logic with refactored components"""
+    """Main application logic with proper data persistence for customer dialog"""
     # Initialize authentication
     auth_manager = AuthManager()
     
@@ -880,21 +881,12 @@ def main():
     
     # Show customer dialog if needed
     if session_manager.show_customer_dialog():
-        # Prepare dialog data if not already prepared
-        shortage_ids, _ = session_manager.get_dialog_data()
-        
-        if not shortage_ids:
-            # Dialog was triggered but data not prepared
-            gap_df_filtered, _ = session_manager.get_gap_results()
-            if gap_df_filtered is not None and not gap_df_filtered.empty:
-                customer_dialog.show_dialog(
-                    gap_df_filtered,
-                    st.session_state.get('_temp_demand_df')
-                )
-        
-        # Show the popup if data is available
-        if '_temp_calculator' in st.session_state:
+        # Validate session state has required data
+        if 'gap_filtered_demand' in st.session_state and 'gap_shortage_products' in st.session_state:
             show_customer_popup()
+        else:
+            logger.warning("Customer dialog requested but data not in session state")
+            session_manager.close_customer_dialog()
     
     # Render filters
     try:
@@ -927,7 +919,7 @@ def main():
         # Determine if we need to calculate or use cached results
         if should_recalculate or not has_results:
             # Perform calculation
-            with st.spinner("🔄 Calculating GAP analysis..."):
+            with st.spinner("📄 Calculating GAP analysis..."):
                 # Load data
                 supply_df, demand_df, safety_stock_df = load_data_with_timing(
                     data_loader, filter_values
@@ -945,6 +937,12 @@ def main():
                     )
                     st.stop()
                 
+                # CRITICAL: Store raw data in session state BEFORE calculation
+                st.session_state['gap_raw_supply'] = supply_df.copy()
+                st.session_state['gap_raw_demand'] = demand_df.copy()
+                st.session_state['gap_filters'] = filter_values.copy()
+                st.session_state['last_gap_filters'] = filter_values.copy()
+                
                 # Calculate GAP (full dataset, no quick filter applied yet)
                 gap_df = calculate_gap_with_progress(
                     calculator, supply_df, demand_df, safety_stock_df, filter_values
@@ -956,22 +954,41 @@ def main():
                 # Store results in session manager (full dataset)
                 session_manager.set_gap_calculated(gap_df, metrics, filter_values)
                 
-                # Store raw data for dialog
-                st.session_state['_temp_demand_df'] = demand_df
+                # CRITICAL: Ensure filtered demand is in session state
+                # This should already be done in calculator, but double-check
+                if 'gap_filtered_demand' not in st.session_state:
+                    st.session_state['gap_filtered_demand'] = demand_df.copy()
+                    logger.warning("Had to set gap_filtered_demand in main - should have been set in calculator")
                 
-                logger.info(f"GAP calculation completed and cached: {len(gap_df)} items")
+                # Store shortage information
+                shortage_df = gap_df[gap_df['net_gap'] < 0]
+                if not shortage_df.empty and 'product_id' in shortage_df.columns:
+                    st.session_state['gap_shortage_products'] = shortage_df['product_id'].tolist()
+                    st.session_state['gap_shortage_df'] = shortage_df.copy()
+                
+                logger.info(f"GAP calculation completed: {len(gap_df)} items, "
+                           f"{len(st.session_state.get('gap_shortage_products', []))} shortage products")
         
         else:
             # Use cached results
             gap_df, metrics = session_manager.get_gap_results()
             include_safety = filter_values.get('include_safety_stock', False)
             
-            # Always reload demand_df for dialog functionality
-            if '_temp_demand_df' not in st.session_state or st.session_state.get('_temp_demand_df') is None:
+            # CRITICAL: Ensure session state has demand data for dialog
+            if 'gap_filtered_demand' not in st.session_state:
+                logger.warning("gap_filtered_demand missing from session state, reloading...")
                 with st.spinner("Loading customer data..."):
                     _, demand_df, _ = load_data_with_timing(data_loader, filter_values)
-                    st.session_state['_temp_demand_df'] = demand_df
-                    logger.info("Demand data reloaded for dialog support")
+                    st.session_state['gap_filtered_demand'] = demand_df
+                    logger.info(f"Reloaded {len(demand_df)} demand records into session state")
+            
+            # Ensure shortage products are in session state
+            if 'gap_shortage_products' not in st.session_state:
+                shortage_df = gap_df[gap_df['net_gap'] < 0]
+                if not shortage_df.empty and 'product_id' in shortage_df.columns:
+                    st.session_state['gap_shortage_products'] = shortage_df['product_id'].tolist()
+                    st.session_state['gap_shortage_df'] = shortage_df.copy()
+                    logger.info(f"Restored {len(shortage_df)} shortage products to session state")
             
             logger.info(f"Using cached GAP results: {len(gap_df)} items")
         
@@ -980,11 +997,12 @@ def main():
         st.session_state['_temp_formatter'] = formatter
         st.session_state['_temp_gap_df'] = gap_df
         
-        # Ensure demand_df is in temp state
-        if '_temp_demand_df' not in st.session_state or st.session_state.get('_temp_demand_df') is None:
-            with st.spinner("Loading customer data..."):
-                _, demand_df, _ = load_data_with_timing(data_loader, filter_values)
-                st.session_state['_temp_demand_df'] = demand_df
+        # Log session state status for debugging
+        logger.info(f"Session state status - Keys: {list(st.session_state.keys())}")
+        if 'gap_filtered_demand' in st.session_state:
+            logger.info(f"gap_filtered_demand: {len(st.session_state['gap_filtered_demand'])} records")
+        if 'gap_shortage_products' in st.session_state:
+            logger.info(f"gap_shortage_products: {len(st.session_state['gap_shortage_products'])} products")
         
         # Display configuration summary
         include_safety = filter_values.get('include_safety_stock', False)

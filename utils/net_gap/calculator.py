@@ -68,7 +68,7 @@ class GAPCalculator:
     ) -> pd.DataFrame:
         """
         Calculate net GAP with optional safety stock consideration
-        FIXED: Join logic to prevent duplicate rows
+        FIXED: Join logic to prevent duplicate rows and proper data persistence
         
         Args:
             supply_df: Supply data from unified_supply_view
@@ -107,6 +107,20 @@ class GAPCalculator:
             if self._include_safety:
                 self._safety_stock_df = safety_stock_df.copy()
             
+            # CRITICAL: Store in session state for dialog access
+            try:
+                import streamlit as st
+                # Store the filtered demand data
+                st.session_state['gap_filtered_demand'] = self._filtered_demand_df.copy()
+                st.session_state['gap_filtered_supply'] = supply_df.copy()
+                st.session_state['gap_group_by'] = group_by
+                st.session_state['gap_calculation_timestamp'] = datetime.now()
+                
+                logger.info(f"Stored {len(self._filtered_demand_df)} filtered demand records in session state")
+                logger.info(f"Session state keys: {list(st.session_state.keys())}")
+            except Exception as e:
+                logger.warning(f"Could not store in session state: {e}")
+            
             # Get group columns and join keys
             group_cols = self._get_group_columns(group_by)
             join_keys = self._get_join_keys(group_by)
@@ -135,14 +149,26 @@ class GAPCalculator:
                 ascending=[True, True]
             )
             
+            # Store shortage product IDs in session state
+            try:
+                import streamlit as st
+                shortage_df = gap_df[gap_df['net_gap'] < 0]
+                if not shortage_df.empty and 'product_id' in shortage_df.columns:
+                    st.session_state['gap_shortage_products'] = shortage_df['product_id'].tolist()
+                    st.session_state['gap_shortage_df'] = shortage_df.copy()
+                    logger.info(f"Stored {len(shortage_df)} shortage products in session state")
+            except Exception as e:
+                logger.warning(f"Could not store shortage products: {e}")
+            
             logger.info(f"Calculated GAP for {len(gap_df)} {group_by} groups "
-                       f"(safety stock: {'included' if self._include_safety else 'excluded'})")
+                    f"(safety stock: {'included' if self._include_safety else 'excluded'})")
             return gap_df
             
         except Exception as e:
             logger.error(f"Error calculating net GAP: {e}", exc_info=True)
             raise
-    
+
+
     def _normalize_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Normalize text columns for consistent joining
@@ -677,8 +703,14 @@ class GAPCalculator:
             else:
                 return int(gap_df[gap_df['net_gap'] < 0].get('customer_count', pd.Series([0])).sum())
             
+            # Log for debugging
+            logger.info(f"Calculating affected customers from {len(affected_demand)} filtered demand records")
+            
+            # IMPORTANT: Use simple unique count without deduplication for consistency
+            # The deduplication should happen at data loading level, not here
             if 'customer' in affected_demand.columns:
                 unique_customers = affected_demand['customer'].nunique()
+                logger.info(f"Found {unique_customers} unique affected customers")
             else:
                 return 0
             
@@ -687,6 +719,15 @@ class GAPCalculator:
         except Exception as e:
             logger.error(f"Error calculating affected customers: {e}", exc_info=True)
             return int(gap_df[gap_df['net_gap'] < 0].get('customer_count', pd.Series([0])).sum())
+    
+    def get_filtered_demand_df(self) -> Optional[pd.DataFrame]:
+        """
+        Get the filtered demand dataframe for external use (e.g., customer dialog)
+        Ensures consistency between calculations
+        """
+        if hasattr(self, '_filtered_demand_df') and self._filtered_demand_df is not None:
+            return self._filtered_demand_df.copy()
+        return None
     
     def get_summary_metrics(self, gap_df: pd.DataFrame) -> Dict[str, any]:
         """Calculate summary metrics from GAP analysis"""
