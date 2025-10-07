@@ -1,12 +1,11 @@
 # utils/net_gap/data_loader.py
 
 """
-Data loader module for GAP Analysis System - Version 2.1 (Refactored)
-- Fixed entity ID mapping for safety stock
-- Added comprehensive input validation
-- Improved error handling with custom exceptions
-- Optimized cache keys using tuples
-- Better connection management
+Data loader module for GAP Analysis System - Version 2.2 FIXED
+- Added data normalization to prevent JOIN issues
+- Improved consistency checks
+- Better handling of text fields
+- Enhanced validation
 """
 
 import pandas as pd
@@ -60,7 +59,7 @@ class DatabaseConnectionError(DataLoadError):
 
 
 class GAPDataLoader:
-    """Handles all data loading operations for GAP analysis with validation and error handling"""
+    """Handles all data loading operations for GAP analysis with validation and normalization"""
     
     def __init__(self):
         """Initialize data loader with database engine"""
@@ -85,15 +84,7 @@ class GAPDataLoader:
     
     @contextmanager
     def get_connection(self):
-        """
-        Context manager for database connections with error handling
-        
-        Yields:
-            Database connection
-            
-        Raises:
-            DatabaseConnectionError: If connection fails
-        """
+        """Context manager for database connections with error handling"""
         try:
             conn = self.engine.connect()
             yield conn
@@ -106,17 +97,36 @@ class GAPDataLoader:
             except:
                 pass
     
-    # Input Validation Methods
-    def _validate_entity_name(self, entity_name: Optional[str]) -> None:
+    def _normalize_text_field(self, value: Any, field_name: str = '') -> str:
         """
-        Validate entity name input
+        Normalize a text field value for consistency
         
         Args:
-            entity_name: Entity name to validate
+            value: Value to normalize
+            field_name: Name of field for special handling
             
-        Raises:
-            ValidationError: If validation fails
+        Returns:
+            Normalized string value
         """
+        if pd.isna(value) or value is None:
+            return ''
+        
+        # Convert to string
+        str_value = str(value).strip()
+        
+        # Special handling for certain fields
+        if field_name == 'pt_code':
+            # Keep pt_code case-sensitive
+            return str_value
+        elif field_name in ['brand', 'product_name', 'standard_uom']:
+            # Uppercase for consistency
+            return str_value.upper()
+        else:
+            return str_value
+    
+    # Input Validation Methods
+    def _validate_entity_name(self, entity_name: Optional[str]) -> None:
+        """Validate entity name input"""
         if entity_name is None:
             return  # None is valid (means all entities)
         
@@ -134,16 +144,7 @@ class GAPDataLoader:
             raise ValidationError("Entity name contains invalid characters")
     
     def _validate_date_range(self, date_from: Optional[date], date_to: Optional[date]) -> None:
-        """
-        Validate date range input
-        
-        Args:
-            date_from: Start date
-            date_to: End date
-            
-        Raises:
-            ValidationError: If validation fails
-        """
+        """Validate date range input"""
         if date_from is None and date_to is None:
             return
         
@@ -166,15 +167,7 @@ class GAPDataLoader:
             raise ValidationError(f"End date too far in future: {date_to}")
     
     def _validate_product_ids(self, product_ids: Optional[List[int]]) -> None:
-        """
-        Validate product IDs list
-        
-        Args:
-            product_ids: List of product IDs
-            
-        Raises:
-            ValidationError: If validation fails
-        """
+        """Validate product IDs list"""
         if product_ids is None or len(product_ids) == 0:
             return
         
@@ -192,17 +185,7 @@ class GAPDataLoader:
                 raise ValidationError(f"Invalid product ID: {pid}")
     
     def _validate_list_input(self, items: Optional[List[str]], name: str, max_items: int) -> None:
-        """
-        Validate string list inputs (brands, customers, etc.)
-        
-        Args:
-            items: List of items to validate
-            name: Name of the field for error messages
-            max_items: Maximum number of items allowed
-            
-        Raises:
-            ValidationError: If validation fails
-        """
+        """Validate string list inputs (brands, customers, etc.)"""
         if items is None or len(items) == 0:
             return
         
@@ -218,22 +201,10 @@ class GAPDataLoader:
             if len(item) > 200:
                 raise ValidationError(f"{name} item too long: {len(item)} chars")
     
-    # Entity ID Mapping (Fix for Bug #1)
+    # Entity ID Mapping
     @st.cache_data(ttl=CACHE_TTL_REFERENCE)
     def get_entity_id(_self, entity_name: str) -> Optional[int]:
-        """
-        Map entity name to entity ID
-        
-        Args:
-            entity_name: Entity name
-            
-        Returns:
-            Entity ID or None if not found
-            
-        Raises:
-            ValidationError: If entity name is invalid
-            DataLoadError: If query fails
-        """
+        """Map entity name to entity ID"""
         _self._validate_entity_name(entity_name)
         
         # Check cache first
@@ -267,12 +238,7 @@ class GAPDataLoader:
     
     @st.cache_data(ttl=CACHE_TTL_REFERENCE)
     def check_safety_stock_availability(_self) -> bool:
-        """
-        Check if safety stock data is available in the database
-        
-        Returns:
-            True if safety stock tables exist and have data
-        """
+        """Check if safety stock data is available in the database"""
         if _self._safety_stock_available is not None:
             return _self._safety_stock_available
             
@@ -303,24 +269,10 @@ class GAPDataLoader:
     def load_safety_stock_data(
         _self,
         entity_name: Optional[str] = None,
-        product_ids: Optional[Tuple[int, ...]] = None,  # Changed to Tuple for caching
+        product_ids: Optional[Tuple[int, ...]] = None,
         include_customer_specific: bool = True
     ) -> pd.DataFrame:
-        """
-        Load safety stock requirements from safety_stock_current_view
-        
-        Args:
-            entity_name: Filter by entity name (will be mapped to ID)
-            product_ids: Tuple of product IDs to filter
-            include_customer_specific: Whether to include customer-specific rules
-            
-        Returns:
-            DataFrame with safety stock requirements
-            
-        Raises:
-            ValidationError: If input validation fails
-            DataLoadError: If data loading fails
-        """
+        """Load safety stock requirements from safety_stock_current_view"""
         try:
             # Validate inputs
             _self._validate_entity_name(entity_name)
@@ -386,7 +338,7 @@ class GAPDataLoader:
             with _self.get_connection() as conn:
                 df = pd.read_sql(text(query), conn, params=params)
             
-            # Process dataframe
+            # Process and normalize dataframe
             df = _self._process_safety_stock_dataframe(df)
             
             logger.info(f"Loaded {len(df)} safety stock rules")
@@ -402,11 +354,18 @@ class GAPDataLoader:
             raise DataLoadError(f"Failed to load safety stock data: {str(e)}")
     
     def _process_safety_stock_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Process and clean safety stock dataframe with validation"""
+        """Process and normalize safety stock dataframe"""
         if df.empty:
             return df
         
-        # Convert numeric columns with error tracking
+        # Normalize text fields
+        text_cols = ['product_name', 'pt_code', 'brand', 'standard_uom', 
+                     'entity_name', 'customer_name']
+        for col in text_cols:
+            if col in df.columns:
+                df[col] = df[col].apply(lambda x: self._normalize_text_field(x, col))
+        
+        # Convert numeric columns
         numeric_columns = [
             'safety_stock_qty', 'reorder_point', 'avg_daily_demand',
             'safety_days', 'lead_time_days', 'service_level_percent',
@@ -424,16 +383,7 @@ class GAPDataLoader:
         return df
     
     def _safe_numeric_conversion(self, df: pd.DataFrame, col: str) -> pd.Series:
-        """
-        Convert column to numeric with logging of failures
-        
-        Args:
-            df: DataFrame containing the column
-            col: Column name to convert
-            
-        Returns:
-            Converted series
-        """
+        """Convert column to numeric with logging of failures"""
         original = df[col]
         converted = pd.to_numeric(original, errors='coerce')
         failed = converted.isna() & original.notna()
@@ -448,15 +398,7 @@ class GAPDataLoader:
     
     @st.cache_data(ttl=CACHE_TTL_REFERENCE)
     def get_date_range(_self) -> Dict[str, date]:
-        """
-        Get min and max dates from supply and demand views
-        
-        Returns:
-            Dict with 'min_date' and 'max_date'
-            
-        Raises:
-            DataLoadError: If query fails
-        """
+        """Get min and max dates from supply and demand views"""
         try:
             query = """
                 SELECT 
@@ -510,26 +452,10 @@ class GAPDataLoader:
         entity_name: Optional[str] = None,
         date_from: Optional[date] = None,
         date_to: Optional[date] = None,
-        product_ids: Optional[Tuple[int, ...]] = None,  # Changed to Tuple for caching
-        brands: Optional[Tuple[str, ...]] = None  # Changed to Tuple for caching
+        product_ids: Optional[Tuple[int, ...]] = None,
+        brands: Optional[Tuple[str, ...]] = None
     ) -> pd.DataFrame:
-        """
-        Load supply data from unified_supply_view
-        
-        Args:
-            entity_name: Filter by entity
-            date_from: Start date for availability_date filter
-            date_to: End date for availability_date filter
-            product_ids: Tuple of product IDs to filter
-            brands: Tuple of brands to filter
-            
-        Returns:
-            DataFrame with supply data
-            
-        Raises:
-            ValidationError: If input validation fails
-            DataLoadError: If data loading fails
-        """
+        """Load supply data from unified_supply_view with normalization"""
         try:
             # Validate inputs
             _self._validate_entity_name(entity_name)
@@ -547,7 +473,7 @@ class GAPDataLoader:
             with _self.get_connection() as conn:
                 df = pd.read_sql(text(query), conn, params=params)
             
-            # Process dataframe
+            # Process and normalize dataframe
             df = _self._process_supply_dataframe(df)
             
             logger.info(f"Loaded {len(df)} supply records")
@@ -568,28 +494,11 @@ class GAPDataLoader:
         entity_name: Optional[str] = None,
         date_from: Optional[date] = None,
         date_to: Optional[date] = None,
-        product_ids: Optional[Tuple[int, ...]] = None,  # Changed to Tuple for caching
-        brands: Optional[Tuple[str, ...]] = None,  # Changed to Tuple for caching
-        customers: Optional[Tuple[str, ...]] = None  # Changed to Tuple for caching
+        product_ids: Optional[Tuple[int, ...]] = None,
+        brands: Optional[Tuple[str, ...]] = None,
+        customers: Optional[Tuple[str, ...]] = None
     ) -> pd.DataFrame:
-        """
-        Load demand data from unified_demand_view
-        
-        Args:
-            entity_name: Filter by entity
-            date_from: Start date for required_date filter
-            date_to: End date for required_date filter
-            product_ids: Tuple of product IDs to filter
-            brands: Tuple of brands to filter
-            customers: Tuple of customers to filter
-            
-        Returns:
-            DataFrame with demand data
-            
-        Raises:
-            ValidationError: If input validation fails
-            DataLoadError: If data loading fails
-        """
+        """Load demand data from unified_demand_view with normalization"""
         try:
             # Validate inputs
             _self._validate_entity_name(entity_name)
@@ -609,7 +518,7 @@ class GAPDataLoader:
             with _self.get_connection() as conn:
                 df = pd.read_sql(text(query), conn, params=params)
             
-            # Process dataframe
+            # Process and normalize dataframe
             df = _self._process_demand_dataframe(df)
             
             logger.info(f"Loaded {len(df)} demand records")
@@ -781,9 +690,16 @@ class GAPDataLoader:
         return " ".join(query_parts), params
     
     def _process_supply_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Process and clean supply dataframe"""
+        """Process and normalize supply dataframe"""
         if df.empty:
             return df
+        
+        # Normalize text fields FIRST
+        text_cols = ['product_name', 'pt_code', 'brand', 'standard_uom', 
+                     'warehouse_name', 'entity_name', 'supplier_name']
+        for col in text_cols:
+            if col in df.columns:
+                df[col] = df[col].apply(lambda x: self._normalize_text_field(x, col))
         
         # Convert date columns
         date_columns = ['availability_date', 'expiry_date']
@@ -791,7 +707,7 @@ class GAPDataLoader:
             if col in df.columns:
                 df[col] = pd.to_datetime(df[col], errors='coerce')
         
-        # Convert numeric columns with error tracking
+        # Convert numeric columns
         numeric_columns = [
             'available_quantity', 'days_to_available', 'days_to_expiry',
             'unit_cost_usd', 'total_value_usd', 'aging_days', 'completion_percentage'
@@ -800,12 +716,26 @@ class GAPDataLoader:
             if col in df.columns:
                 df[col] = self._safe_numeric_conversion(df, col)
         
+        # Log sample for debugging
+        if len(df) > 0:
+            sample = df.iloc[0]
+            logger.debug(f"Supply sample - product_id: {sample.get('product_id')}, "
+                        f"pt_code: '{sample.get('pt_code')}', "
+                        f"brand: '{sample.get('brand')}'")
+        
         return df
     
     def _process_demand_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Process and clean demand dataframe"""
+        """Process and normalize demand dataframe"""
         if df.empty:
             return df
+        
+        # Normalize text fields FIRST
+        text_cols = ['product_name', 'pt_code', 'brand', 'standard_uom', 
+                     'customer', 'customer_code', 'entity_name']
+        for col in text_cols:
+            if col in df.columns:
+                df[col] = df[col].apply(lambda x: self._normalize_text_field(x, col))
         
         # Convert date columns
         date_columns = ['required_date']
@@ -813,7 +743,7 @@ class GAPDataLoader:
             if col in df.columns:
                 df[col] = pd.to_datetime(df[col], errors='coerce')
         
-        # Convert numeric columns with error tracking
+        # Convert numeric columns
         numeric_columns = [
             'required_quantity', 'days_to_required', 'allocation_coverage_percent',
             'allocated_quantity', 'unallocated_quantity', 'over_committed_qty_standard',
@@ -833,20 +763,19 @@ class GAPDataLoader:
                     True: True, False: False
                 }).fillna(False)
         
+        # Log sample for debugging
+        if len(df) > 0:
+            sample = df.iloc[0]
+            logger.debug(f"Demand sample - product_id: {sample.get('product_id')}, "
+                        f"pt_code: '{sample.get('pt_code')}', "
+                        f"brand: '{sample.get('brand')}'")
+        
         return df
     
     # Reference Data Methods
     @st.cache_data(ttl=CACHE_TTL_REFERENCE)
     def get_entities(_self) -> List[str]:
-        """
-        Get list of unique entities from both views
-        
-        Returns:
-            List of entity names
-            
-        Raises:
-            DataLoadError: If query fails
-        """
+        """Get list of unique entities from both views"""
         try:
             query = """
                 SELECT DISTINCT entity_name 
@@ -873,19 +802,7 @@ class GAPDataLoader:
     
     @st.cache_data(ttl=CACHE_TTL_REFERENCE)
     def get_products(_self, entity_name: Optional[str] = None) -> pd.DataFrame:
-        """
-        Get list of products with basic info
-        
-        Args:
-            entity_name: Filter by entity
-            
-        Returns:
-            DataFrame with product information
-            
-        Raises:
-            ValidationError: If entity name is invalid
-            DataLoadError: If query fails
-        """
+        """Get list of products with basic info (normalized)"""
         try:
             _self._validate_entity_name(entity_name)
             
@@ -921,6 +838,12 @@ class GAPDataLoader:
             with _self.get_connection() as conn:
                 df = pd.read_sql(text(query), conn, params=params)
             
+            # Normalize text fields
+            text_cols = ['product_name', 'pt_code', 'brand', 'standard_uom']
+            for col in text_cols:
+                if col in df.columns:
+                    df[col] = df[col].apply(lambda x: _self._normalize_text_field(x, col))
+            
             logger.info(f"Loaded {len(df)} products")
             return df
             
@@ -932,19 +855,7 @@ class GAPDataLoader:
     
     @st.cache_data(ttl=CACHE_TTL_REFERENCE)
     def get_brands(_self, entity_name: Optional[str] = None) -> List[str]:
-        """
-        Get list of unique brands
-        
-        Args:
-            entity_name: Filter by entity
-            
-        Returns:
-            List of brand names
-            
-        Raises:
-            ValidationError: If entity name is invalid
-            DataLoadError: If query fails
-        """
+        """Get list of unique brands (normalized)"""
         try:
             _self._validate_entity_name(entity_name)
             
@@ -970,8 +881,15 @@ class GAPDataLoader:
             
             with _self.get_connection() as conn:
                 result = conn.execute(text(query), params)
-                brands = [row[0] for row in result if row[0]]
+                brands = []
+                for row in result:
+                    if row[0]:
+                        # Normalize brand name
+                        normalized = _self._normalize_text_field(row[0], 'brand')
+                        if normalized and normalized not in brands:
+                            brands.append(normalized)
             
+            brands.sort()
             logger.info(f"Loaded {len(brands)} brands")
             return brands
             
@@ -983,19 +901,7 @@ class GAPDataLoader:
     
     @st.cache_data(ttl=CACHE_TTL_REFERENCE)
     def get_customers(_self, entity_name: Optional[str] = None) -> List[str]:
-        """
-        Get list of unique customers
-        
-        Args:
-            entity_name: Filter by entity
-            
-        Returns:
-            List of customer names
-            
-        Raises:
-            ValidationError: If entity name is invalid
-            DataLoadError: If query fails
-        """
+        """Get list of unique customers (normalized)"""
         try:
             _self._validate_entity_name(entity_name)
             
@@ -1015,8 +921,15 @@ class GAPDataLoader:
             
             with _self.get_connection() as conn:
                 result = conn.execute(text(query), params)
-                customers = [row[0] for row in result if row[0]]
+                customers = []
+                for row in result:
+                    if row[0]:
+                        # Normalize customer name
+                        normalized = _self._normalize_text_field(row[0], 'customer')
+                        if normalized and normalized not in customers:
+                            customers.append(normalized)
             
+            customers.sort()
             logger.info(f"Loaded {len(customers)} customers")
             return customers
             

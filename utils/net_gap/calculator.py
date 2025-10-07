@@ -1,11 +1,11 @@
 # utils/net_gap/calculator.py
 
 """
-Calculator module for GAP Analysis System - Version 2.0
-- Integrated safety stock calculations
-- Single unified GAP metric that adapts based on safety stock
-- Context-aware status classification
-- Fixed datetime comparison issues
+Calculator module for GAP Analysis System - Version 2.1 FIXED
+- Fixed OUTER JOIN issue causing duplicate rows
+- Join only on key columns (product_id or brand)
+- Improved data normalization
+- Better handling of safety stock calculations
 """
 
 import pandas as pd
@@ -68,6 +68,7 @@ class GAPCalculator:
     ) -> pd.DataFrame:
         """
         Calculate net GAP with optional safety stock consideration
+        FIXED: Join logic to prevent duplicate rows
         
         Args:
             supply_df: Supply data from unified_supply_view
@@ -79,7 +80,7 @@ class GAPCalculator:
             include_safety_stock: Whether to include safety stock in calculations
             
         Returns:
-            DataFrame with GAP calculations (adjusted for safety stock if enabled)
+            DataFrame with GAP calculations
         """
         try:
             # Store configuration
@@ -89,6 +90,10 @@ class GAPCalculator:
             if group_by not in ['product', 'brand']:
                 logger.warning(f"Invalid group_by value: {group_by}, defaulting to 'product'")
                 group_by = 'product'
+            
+            # Normalize text fields before processing to prevent JOIN issues
+            supply_df = self._normalize_dataframe(supply_df)
+            demand_df = self._normalize_dataframe(demand_df)
             
             # Filter by selected sources
             if selected_supply_sources:
@@ -102,31 +107,26 @@ class GAPCalculator:
             if self._include_safety:
                 self._safety_stock_df = safety_stock_df.copy()
             
-            # Get group columns
+            # Get group columns and join keys
             group_cols = self._get_group_columns(group_by)
+            join_keys = self._get_join_keys(group_by)
             
             # Aggregate supply and demand
             supply_agg = self._aggregate_supply(supply_df, group_cols)
             demand_agg = self._aggregate_demand(demand_df, group_cols)
             
+            # FIXED: Smart merge using only key columns
+            gap_df = self._smart_merge(supply_agg, demand_agg, join_keys, group_cols)
+            
             # Merge safety stock if included
             if self._include_safety:
-                supply_agg = self._merge_safety_stock(supply_agg, safety_stock_df, group_cols)
-            
-            # Merge supply and demand
-            gap_df = pd.merge(
-                supply_agg,
-                demand_agg,
-                on=group_cols,
-                how='outer',
-                suffixes=('_supply', '_demand')
-            )
+                gap_df = self._merge_safety_stock(gap_df, safety_stock_df, join_keys)
             
             # Fill NaN values
             numeric_cols = gap_df.select_dtypes(include=[np.number]).columns
             gap_df[numeric_cols] = gap_df[numeric_cols].fillna(0)
             
-            # Calculate GAP metrics (will adapt based on safety stock)
+            # Calculate GAP metrics
             gap_df = self._calculate_gap_metrics(gap_df)
             
             # Sort by priority
@@ -143,6 +143,26 @@ class GAPCalculator:
             logger.error(f"Error calculating net GAP: {e}", exc_info=True)
             raise
     
+    def _normalize_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Normalize text columns for consistent joining
+        Prevents duplicate rows from minor text differences
+        """
+        df = df.copy()
+        
+        # Text columns to normalize
+        text_cols = ['product_name', 'brand', 'pt_code', 'standard_uom']
+        
+        for col in text_cols:
+            if col in df.columns:
+                # Strip whitespace and standardize case
+                df[col] = df[col].astype(str).str.strip()
+                # Don't uppercase pt_code as it may be case-sensitive
+                if col != 'pt_code':
+                    df[col] = df[col].str.upper()
+        
+        return df
+    
     def _get_group_columns(self, group_by: str) -> List[str]:
         """Get grouping columns based on aggregation level"""
         if group_by == 'product':
@@ -153,6 +173,68 @@ class GAPCalculator:
             logger.error(f"Unexpected group_by value: {group_by}")
             return ['product_id', 'product_name', 'pt_code', 'brand', 'standard_uom']
     
+    def _get_join_keys(self, group_by: str) -> List[str]:
+        """
+        Get JOIN key columns (primary keys only)
+        FIXED: Use only primary keys for joining to prevent duplicates
+        """
+        if group_by == 'product':
+            return ['product_id']  # Only use product_id for joining
+        elif group_by == 'brand':
+            return ['brand']  # Only use brand for joining
+        else:
+            return ['product_id']
+    
+    def _smart_merge(
+        self, 
+        supply_agg: pd.DataFrame, 
+        demand_agg: pd.DataFrame,
+        join_keys: List[str],
+        group_cols: List[str]
+    ) -> pd.DataFrame:
+        """
+        Smart merge that handles mismatched descriptive columns
+        FIXED: Prevents duplicate rows from text differences
+        """
+        # Separate key columns from descriptive columns
+        desc_cols = [col for col in group_cols if col not in join_keys]
+        
+        # Perform merge on key columns only
+        gap_df = pd.merge(
+            supply_agg,
+            demand_agg,
+            on=join_keys,
+            how='outer',
+            suffixes=('_supply', '_demand'),
+            indicator=True
+        )
+        
+        # Handle descriptive columns - prefer supply side, fallback to demand
+        for col in desc_cols:
+            supply_col = f'{col}_supply'
+            demand_col = f'{col}_demand'
+            
+            if supply_col in gap_df.columns and demand_col in gap_df.columns:
+                # Use supply value if available, otherwise demand
+                gap_df[col] = gap_df[supply_col].fillna(gap_df[demand_col])
+                # Drop the suffixed columns
+                gap_df.drop([supply_col, demand_col], axis=1, inplace=True)
+            elif supply_col in gap_df.columns:
+                gap_df[col] = gap_df[supply_col]
+                gap_df.drop([supply_col], axis=1, inplace=True)
+            elif demand_col in gap_df.columns:
+                gap_df[col] = gap_df[demand_col]
+                gap_df.drop([demand_col], axis=1, inplace=True)
+        
+        # Log merge results for debugging
+        merge_info = gap_df['_merge'].value_counts()
+        logger.debug(f"Merge results: {merge_info.to_dict()}")
+        
+        # Drop merge indicator
+        gap_df.drop('_merge', axis=1, inplace=True)
+        
+        return gap_df
+    
     def _aggregate_supply(self, supply_df: pd.DataFrame, group_cols: List[str]) -> pd.DataFrame:
         """Aggregate supply data by specified columns"""
         if supply_df.empty:
@@ -160,10 +242,9 @@ class GAPCalculator:
         
         supply_df = supply_df.copy()
         
-        # Filter out expired items - FIXED: Use consistent datetime types
-        today = pd.Timestamp.now().normalize()  # Keep as Timestamp for comparison
+        # Filter out expired items
+        today = pd.Timestamp.now().normalize()
         if 'expiry_date' in supply_df.columns:
-            # Convert expiry_date to datetime and compare
             supply_df['expiry_date'] = pd.to_datetime(supply_df['expiry_date'], errors='coerce')
             supply_df = supply_df[
                 (supply_df['expiry_date'].isna()) | 
@@ -291,47 +372,44 @@ class GAPCalculator:
     
     def _merge_safety_stock(
         self, 
-        supply_agg: pd.DataFrame, 
+        gap_df: pd.DataFrame, 
         safety_stock_df: pd.DataFrame, 
-        group_cols: List[str]
+        join_keys: List[str]
     ) -> pd.DataFrame:
-        """Merge safety stock data with supply aggregation"""
+        """Merge safety stock data with GAP analysis"""
         if safety_stock_df.empty:
-            supply_agg['safety_stock_qty'] = 0
-            supply_agg['reorder_point'] = 0
-            supply_agg['avg_daily_demand'] = 0
-            return supply_agg
+            gap_df['safety_stock_qty'] = 0
+            gap_df['reorder_point'] = 0
+            gap_df['avg_daily_demand'] = 0
+            return gap_df
         
         # Select relevant columns from safety stock
         safety_cols = ['product_id', 'safety_stock_qty', 'reorder_point', 'avg_daily_demand']
         safety_data = safety_stock_df[safety_cols].copy()
         
-        # Merge based on group level
-        if 'product_id' in group_cols:
-            supply_agg = pd.merge(
-                supply_agg,
+        # Merge based on product_id
+        if 'product_id' in join_keys:
+            gap_df = pd.merge(
+                gap_df,
                 safety_data,
                 on='product_id',
                 how='left'
             )
         else:
             # For brand-level grouping, sum safety stock by brand
-            # This requires joining with product master first
-            supply_agg['safety_stock_qty'] = 0
-            supply_agg['reorder_point'] = 0
-            supply_agg['avg_daily_demand'] = 0
+            gap_df['safety_stock_qty'] = 0
+            gap_df['reorder_point'] = 0
+            gap_df['avg_daily_demand'] = 0
         
         # Fill NaN values
-        supply_agg['safety_stock_qty'] = supply_agg['safety_stock_qty'].fillna(0)
-        supply_agg['reorder_point'] = supply_agg['reorder_point'].fillna(0)
-        supply_agg['avg_daily_demand'] = supply_agg['avg_daily_demand'].fillna(0)
+        gap_df['safety_stock_qty'] = gap_df['safety_stock_qty'].fillna(0)
+        gap_df['reorder_point'] = gap_df['reorder_point'].fillna(0)
+        gap_df['avg_daily_demand'] = gap_df['avg_daily_demand'].fillna(0)
         
-        return supply_agg
+        return gap_df
     
     def _calculate_gap_metrics(self, gap_df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Calculate GAP metrics with safety stock awareness
-        """
+        """Calculate GAP metrics with safety stock awareness"""
         # Determine effective available supply
         if self._include_safety:
             # When safety stock is included, adjust available supply
@@ -430,9 +508,7 @@ class GAPCalculator:
         return gap_df
     
     def _classify_gap_status(self, row: pd.Series) -> str:
-        """
-        Classify GAP status with safety stock awareness
-        """
+        """Classify GAP status with safety stock awareness"""
         coverage = row.get('coverage_ratio', 0)
         demand = row.get('total_demand', 0)
         inventory = row.get('supply_inventory', 0)
@@ -470,7 +546,7 @@ class GAPCalculator:
                 return 'NO_DEMAND_INCOMING'
             return 'NO_DEMAND'
         
-        # Coverage-based classification (same thresholds but using adjusted coverage)
+        # Coverage-based classification
         if coverage > COVERAGE_THRESHOLDS['SEVERE_SURPLUS']:
             return 'SEVERE_SURPLUS'
         elif coverage > COVERAGE_THRESHOLDS['HIGH_SURPLUS']:
@@ -491,7 +567,6 @@ class GAPCalculator:
     def _calculate_priority(self, row: pd.Series) -> int:
         """Calculate action priority with safety stock awareness"""
         status = row.get('gap_status', 'UNKNOWN')
-        coverage = row.get('coverage_ratio', 0)
         
         # Critical priorities
         critical_statuses = [
@@ -614,19 +689,14 @@ class GAPCalculator:
             return int(gap_df[gap_df['net_gap'] < 0].get('customer_count', pd.Series([0])).sum())
     
     def get_summary_metrics(self, gap_df: pd.DataFrame) -> Dict[str, any]:
-        """
-        Calculate summary metrics from GAP analysis
-        Enhanced with safety stock metrics when enabled
-        """
+        """Calculate summary metrics from GAP analysis"""
         # Define status groups
         if self._include_safety:
-            # Safety-aware status groups
             shortage_statuses = ['SEVERE_SHORTAGE', 'HIGH_SHORTAGE', 'MODERATE_SHORTAGE', 
                                 'BELOW_SAFETY', 'CRITICAL_BREACH']
             critical_statuses = ['SEVERE_SHORTAGE', 'HIGH_SHORTAGE', 'CRITICAL_BREACH', 
                                 'BELOW_SAFETY', 'HAS_EXPIRED']
         else:
-            # Traditional status groups
             shortage_statuses = ['SEVERE_SHORTAGE', 'HIGH_SHORTAGE', 'MODERATE_SHORTAGE']
             critical_statuses = ['SEVERE_SHORTAGE', 'HIGH_SHORTAGE']
         
@@ -635,7 +705,7 @@ class GAPCalculator:
         # Calculate unique affected customers
         affected_customers = self._calculate_unique_affected_customers(gap_df)
         
-        # Basic metrics (same for both modes)
+        # Basic metrics
         metrics = {
             'total_products': len(gap_df),
             'total_supply': gap_df['total_supply'].sum(),
