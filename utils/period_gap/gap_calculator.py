@@ -40,7 +40,7 @@ def calculate_gap_with_carry_forward(
     # Initialize processor
     processor = PeriodBasedGAPProcessor(period_type)
     
-    # Process all data by period - NO ALLOCATIONS PARAMETER
+    # Process all data by period
     with st.spinner("Processing data by period..."):
         period_data = processor.process_for_gap(df_demand, df_supply)
     
@@ -55,22 +55,11 @@ def calculate_gap_with_carry_forward(
     for product in products:
         product_data = period_data[period_data['pt_code'] == product].copy()
         
-        # CRITICAL: Sort by period BEFORE any processing
-        # The period column here is still in raw format like "Week 41 - 2025"
+        # Sort by period BEFORE any processing
         if period_type == "Weekly":
-            # Parse the raw period string for sorting
-            def clean_parse_week(period_str):
-                # Remove any potential indicators that might have been added
-                clean = str(period_str).replace('🔴', '').strip()
-                return parse_week_period(clean)
-            
-            product_data['sort_key'] = product_data['period'].apply(clean_parse_week)
+            product_data['sort_key'] = product_data['period'].apply(parse_week_period)
         elif period_type == "Monthly":
-            def clean_parse_month(period_str):
-                clean = str(period_str).replace('🔴', '').strip()
-                return parse_month_period(clean)
-            
-            product_data['sort_key'] = product_data['period'].apply(clean_parse_month)
+            product_data['sort_key'] = product_data['period'].apply(parse_month_period)
         else:
             product_data['sort_key'] = pd.to_datetime(product_data['period'], errors='coerce')
         
@@ -145,7 +134,7 @@ def calculate_gap_with_carry_forward(
                 'product_name': row.get('product_name', ''),
                 'package_size': row.get('package_size', ''),
                 'standard_uom': row.get('standard_uom', ''),
-                'period': row['period'],  # Keep raw period format for now
+                'period': row['period'],  # Keep clean period format
                 'begin_inventory': begin_inventory,
                 'supply_in_period': row['supply_quantity'],
                 'total_available': total_available,
@@ -165,14 +154,14 @@ def calculate_gap_with_carry_forward(
     
     gap_df = pd.DataFrame(results)
     
-    # IMPORTANT: Sort the entire result dataframe by product and period
+    # Sort the entire result dataframe by product and period
     if not gap_df.empty:
         if period_type == "Weekly":
             gap_df['_sort_product'] = gap_df['pt_code']
-            gap_df['_sort_period'] = gap_df['period'].apply(lambda x: parse_week_period(str(x).replace('🔴', '').strip()))
+            gap_df['_sort_period'] = gap_df['period'].apply(parse_week_period)
         elif period_type == "Monthly":
             gap_df['_sort_product'] = gap_df['pt_code']
-            gap_df['_sort_period'] = gap_df['period'].apply(lambda x: parse_month_period(str(x).replace('🔴', '').strip()))
+            gap_df['_sort_period'] = gap_df['period'].apply(parse_month_period)
         else:
             gap_df['_sort_product'] = gap_df['pt_code']
             gap_df['_sort_period'] = pd.to_datetime(gap_df['period'], errors='coerce')

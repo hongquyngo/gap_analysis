@@ -45,9 +45,6 @@ def show_gap_summary(
         st.error(f"Missing required columns in GAP data: {missing_columns}")
         return
     
-    # === KEY INSIGHTS ===
-    st.markdown("#### 🎯 Key Insights")
-    
     # Calculate essential metrics
     total_shortage = gap_df[gap_df['gap_quantity'] < 0]['gap_quantity'].abs().sum()
     shortage_products = gap_df[gap_df['gap_quantity'] < 0]['pt_code'].nunique()
@@ -169,7 +166,7 @@ def show_gap_summary(
                 delta_color="inverse" if peak_total_backlog > total_backlog else "normal"
             )
     
-    # === EXPANDABLE DETAILS ===
+    # Expandable details
     with st.expander("📈 View Detailed Analysis", expanded=bool(shortage_products > 0 or products_with_backlog > 0)):
         
         if shortage_products > 0 or products_with_backlog > 0:
@@ -295,7 +292,7 @@ def show_gap_detail_table(
     """Show detailed GAP analysis table"""
     from .period_helpers import prepare_gap_detail_display, format_gap_display_df
     
-    st.markdown("### 📄 GAP Details by Product & Period")
+    st.markdown("### 📋 GAP Details by Product & Period")
     
     if gap_df.empty:
         st.info("No data matches the selected filters.")
@@ -325,8 +322,9 @@ def show_gap_detail_table(
 
 def show_gap_pivot_view(gap_df: pd.DataFrame, display_options: Dict[str, Any]):
     """Show GAP pivot view with past period indicators"""
-    from .helpers import create_period_pivot, apply_period_indicators
+    from .helpers import create_period_pivot
     from .formatters import format_number
+    from .period_helpers import is_past_period
     
     st.markdown("### 📊 Pivot View - GAP by Period")
     
@@ -350,19 +348,21 @@ def show_gap_pivot_view(gap_df: pd.DataFrame, display_options: Dict[str, Any]):
         st.info("No data to display after pivoting.")
         return
     
-    # Add past period indicators
-    display_pivot = apply_period_indicators(
-        df=pivot_df,
-        period_type=display_options["period_type"],
-        exclude_cols=["product_name", "pt_code"],
-        indicator="🔴"
-    )
+    # Add past period indicators to column names
+    renamed_columns = {}
+    for col in pivot_df.columns:
+        if col not in ["product_name", "pt_code"]:
+            if is_past_period(str(col), display_options["period_type"]):
+                renamed_columns[col] = f"🔴 {col}"
+    
+    if renamed_columns:
+        pivot_df = pivot_df.rename(columns=renamed_columns)
     
     # Show legend
     st.info("🔴 = Past period (already occurred)")
     
     # Format numbers
-    for col in display_pivot.columns[2:]:
-        display_pivot[col] = display_pivot[col].apply(lambda x: format_number(x))
+    for col in pivot_df.columns[2:]:
+        pivot_df[col] = pivot_df[col].apply(lambda x: format_number(x))
     
-    st.dataframe(display_pivot, use_container_width=True)
+    st.dataframe(pivot_df, use_container_width=True, height=400)

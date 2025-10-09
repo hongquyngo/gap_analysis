@@ -16,7 +16,7 @@ from utils.auth import AuthManager
 # Authentication check
 auth_manager = AuthManager()
 if not auth_manager.check_session():
-    st.switch_page("pages/0_🔑_Login.py")
+    st.switch_page("pages/0_🔒_Login.py")
     st.stop()
 
 import pandas as pd
@@ -34,7 +34,9 @@ from utils.period_gap.gap_display import (
 from utils.period_gap.period_helpers import (
     is_past_period,
     prepare_gap_detail_display,
-    format_gap_display_df
+    format_gap_display_df,
+    parse_week_period,
+    parse_month_period
 )
 from utils.period_gap.formatters import (
     format_number,
@@ -46,8 +48,7 @@ from utils.period_gap.helpers import (
     convert_df_to_excel,
     export_multiple_sheets,
     save_to_session_state,
-    create_period_pivot,
-    apply_period_indicators
+    create_period_pivot
 )
 from utils.period_gap.display_components import DisplayComponents
 from utils.period_gap.session_state import (
@@ -96,7 +97,7 @@ def get_data_loader():
 
 data_loader = get_data_loader()
 
-# === CRITICAL FIX: Pre-load Data for Filters ===
+# === Pre-load Data for Filters ===
 @st.cache_data(ttl=300)  # Cache for 5 minutes
 def initialize_filter_data():
     """Pre-load data to populate filter dropdowns with formatted product options"""
@@ -206,8 +207,8 @@ def initialize_filter_data():
             'customers': sorted(list(customers)),
             'min_date': min_date,
             'max_date': max_date,
-            'demand_df': demand_df,  # Store for immediate use
-            'supply_df': supply_df   # Store for immediate use
+            'demand_df': demand_df,
+            'supply_df': supply_df
         }
     except Exception as e:
         logger.error(f"Error initializing filter data: {e}")
@@ -349,7 +350,7 @@ def apply_standard_filters():
             # Use the formatted product options
             product_options = filter_data.get('product_options', [])
             selected_products = st.multiselect(
-                "Product",  # Updated label
+                "Product",
                 product_options,
                 key="pgap_product_filter",
                 placeholder="All products" if product_options else "No products available"
@@ -693,6 +694,22 @@ if get_period_gap_state():
                 (gap_df_filtered["gap_quantity"] < 0) & 
                 (gap_df_filtered["fulfillment_rate_percent"] < 50)
             ]
+        
+        # RE-SORT after filtering to ensure proper order
+        if not gap_df_filtered.empty:
+            if stored_calc_options['period_type'] == "Weekly":
+                gap_df_filtered['_sort_product'] = gap_df_filtered['pt_code']
+                gap_df_filtered['_sort_period'] = gap_df_filtered['period'].apply(parse_week_period)
+            elif stored_calc_options['period_type'] == "Monthly":
+                gap_df_filtered['_sort_product'] = gap_df_filtered['pt_code']
+                gap_df_filtered['_sort_period'] = gap_df_filtered['period'].apply(parse_month_period)
+            else:
+                gap_df_filtered['_sort_product'] = gap_df_filtered['pt_code']
+                gap_df_filtered['_sort_period'] = pd.to_datetime(gap_df_filtered['period'], errors='coerce')
+            
+            gap_df_filtered = gap_df_filtered.sort_values(['_sort_product', '_sort_period'])
+            gap_df_filtered = gap_df_filtered.drop(columns=['_sort_product', '_sort_period'])
+            gap_df_filtered = gap_df_filtered.reset_index(drop=True)
         
         if gap_df_filtered.empty:
             st.warning("No products match the selected display filters.")

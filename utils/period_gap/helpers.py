@@ -63,6 +63,7 @@ def convert_df_to_excel(df: pd.DataFrame, sheet_name: str = "Data") -> bytes:
         logger.error(f"Error converting DataFrame to Excel: {e}")
         raise
 
+
 def export_multiple_sheets(dataframes_dict: Dict[str, pd.DataFrame]) -> bytes:
     """Export multiple dataframes to different sheets in one Excel file"""
     if not dataframes_dict:
@@ -103,6 +104,7 @@ def export_multiple_sheets(dataframes_dict: Dict[str, pd.DataFrame]) -> bytes:
         logger.error(f"Error exporting multiple sheets: {e}")
         raise
 
+
 # === SESSION STATE HELPERS ===
 
 def save_to_session_state(key: str, value: Any, add_timestamp: bool = True):
@@ -111,9 +113,11 @@ def save_to_session_state(key: str, value: Any, add_timestamp: bool = True):
     if add_timestamp:
         st.session_state[f"{key}_timestamp"] = datetime.now()
 
+
 def get_from_session_state(key: str, default: Any = None) -> Any:
     """Get value from session state"""
     return st.session_state.get(key, default)
+
 
 def clear_session_state_pattern(pattern: str):
     """Clear session state keys matching pattern"""
@@ -123,6 +127,7 @@ def clear_session_state_pattern(pattern: str):
     
     if keys_to_clear:
         logger.debug(f"Cleared {len(keys_to_clear)} session state keys matching '{pattern}'")
+
 
 # === STANDARDIZED PERIOD HANDLING ===
 
@@ -186,31 +191,6 @@ def create_period_pivot(
         logger.error(f"Error creating pivot: {str(e)}")
         return pd.DataFrame()
 
-def apply_period_indicators(
-    df: pd.DataFrame,
-    period_type: str,
-    exclude_cols: List[str],
-    indicator: str = "🔴",
-    reference_date: Optional[datetime] = None
-) -> pd.DataFrame:
-    """Add indicators to past period columns"""
-    from .period_helpers import is_past_period
-    
-    if df.empty:
-        return df
-    
-    display_df = df.copy()
-    renamed_columns = {}
-    
-    for col in display_df.columns:
-        if col not in exclude_cols:
-            if is_past_period(str(col), period_type, reference_date):
-                renamed_columns[col] = f"{indicator} {col}"
-    
-    if renamed_columns:
-        display_df = display_df.rename(columns=renamed_columns)
-    
-    return display_df
 
 def create_download_button(df: pd.DataFrame, filename: str, 
                          button_label: str = "📥 Download Excel",
@@ -233,6 +213,7 @@ def create_download_button(df: pd.DataFrame, filename: str,
     except Exception as e:
         st.error(f"Error creating download: {str(e)}")
 
+
 # === ANALYSIS FUNCTIONS ===
 
 def calculate_fulfillment_rate(available: float, demand: float) -> float:
@@ -241,11 +222,13 @@ def calculate_fulfillment_rate(available: float, demand: float) -> float:
         return 100.0 if available >= 0 else 0.0
     return min(100.0, max(0.0, (available / demand) * 100))
 
+
 def calculate_days_of_supply(inventory: float, daily_demand: float) -> float:
     """Calculate days of supply"""
     if daily_demand <= 0:
         return float('inf') if inventory > 0 else 0.0
     return max(0.0, inventory / daily_demand)
+
 
 def calculate_working_days(start_date: datetime, end_date: datetime, 
                          working_days_per_week: int = 5) -> int:
@@ -276,6 +259,7 @@ def calculate_working_days(start_date: datetime, end_date: datetime,
     
     return max(0, working_days)
 
+
 # === NOTIFICATION HELPERS ===
 
 def show_success_message(message: str, duration: int = 3):
@@ -286,6 +270,7 @@ def show_success_message(message: str, duration: int = 3):
     import time
     time.sleep(duration)
     placeholder.empty()
+
 
 # === EXPORT HELPERS ===
 
