@@ -2,6 +2,7 @@
 """
 Display Functions for Period GAP Analysis
 Handles all visualization and presentation logic
+Updated with improved shortage categorization display
 """
 
 import streamlit as st
@@ -19,7 +20,7 @@ def show_gap_summary(
     df_supply_filtered: Optional[pd.DataFrame] = None
 ):
     """
-    Show GAP analysis summary with backlog tracking support
+    Show GAP analysis summary with improved shortage categorization
     
     Args:
         gap_df: GAP analysis results
@@ -29,6 +30,7 @@ def show_gap_summary(
     """
     from .formatters import format_number, format_currency
     from .period_helpers import is_past_period
+    from .shortage_analyzer import categorize_shortage_type, get_shortage_summary
     
     st.markdown("### 📊 GAP Analysis Summary")
     
@@ -45,12 +47,23 @@ def show_gap_summary(
         st.error(f"Missing required columns in GAP data: {missing_columns}")
         return
     
+    # Categorize shortage types
+    shortage_categorization = categorize_shortage_type(gap_df)
+    net_shortage_products = shortage_categorization['net_shortage']
+    timing_gap_products = shortage_categorization['timing_gap']
+    
     # Calculate essential metrics
-    total_shortage = gap_df[gap_df['gap_quantity'] < 0]['gap_quantity'].abs().sum()
-    shortage_products = gap_df[gap_df['gap_quantity'] < 0]['pt_code'].nunique()
     total_products = gap_df['pt_code'].nunique()
     total_periods = gap_df['period'].nunique()
-    periods_with_shortage = gap_df[gap_df['gap_quantity'] < 0]['period'].nunique()
+    
+    # Metrics for different shortage types
+    products_with_net_shortage = len(net_shortage_products)
+    products_with_timing_gap = len(timing_gap_products)
+    products_no_issue = total_products - products_with_net_shortage - products_with_timing_gap
+    
+    # Calculate shortage quantities for each type
+    net_shortage_qty = gap_df[gap_df['pt_code'].isin(net_shortage_products)]['gap_quantity'].clip(upper=0).abs().sum()
+    timing_gap_qty = gap_df[gap_df['pt_code'].isin(timing_gap_products)]['gap_quantity'].clip(upper=0).abs().sum()
     
     # Calculate backlog metrics if tracking
     track_backlog = display_options.get('track_backlog', True)
@@ -58,41 +71,35 @@ def show_gap_summary(
         final_backlog_by_product = gap_df.groupby('pt_code')['backlog_to_next'].last()
         total_backlog = final_backlog_by_product.sum()
         products_with_backlog = (final_backlog_by_product > 0).sum()
-        
-        max_backlog_by_product = gap_df.groupby('pt_code')['backlog_qty'].max()
-        peak_total_backlog = max_backlog_by_product.sum()
-        products_ever_had_backlog = (max_backlog_by_product > 0).sum()
     else:
         total_backlog = 0
         products_with_backlog = 0
-        peak_total_backlog = 0
-        products_ever_had_backlog = 0
     
-    # Determine overall status
-    if total_shortage == 0 and total_backlog == 0:
-        status_color = "#28a745"
-        status_bg_color = "#d4edda"
-        status_icon = "✅"
-        status_text = "No Shortage Detected"
-        status_detail = "Supply meets demand for all products across all periods"
+    # Determine overall status with improved categorization
+    if products_with_net_shortage > 0:
+        status_color = "#dc3545"
+        status_bg_color = "#f8d7da"
+        status_icon = "🚨"
+        status_text = "Net Shortage Detected"
+        status_detail = f"{products_with_net_shortage} products need new orders | {products_with_timing_gap} products need expedite/reschedule"
+    elif products_with_timing_gap > 0:
+        status_color = "#ffc107"
+        status_bg_color = "#fff3cd"
+        status_icon = "⚠️"
+        status_text = "Timing Gaps Detected"
+        status_detail = f"{products_with_timing_gap} products have sufficient supply but need schedule adjustments"
     elif products_with_backlog > 0:
         status_color = "#fd7e14"
         status_bg_color = "#fff3cd"
         status_icon = "⚠️"
         status_text = "Backlog Detected"
-        status_detail = f"{products_with_backlog} of {total_products} products have unfulfilled demand carried forward"
-    elif shortage_products / total_products > 0.5 or periods_with_shortage / total_periods > 0.5:
-        status_color = "#dc3545"
-        status_bg_color = "#f8d7da"
-        status_icon = "🚨"
-        status_text = "Critical Shortage"
-        status_detail = f"{shortage_products} of {total_products} products need immediate attention"
+        status_detail = f"{products_with_backlog} products have unfulfilled demand carried forward"
     else:
-        status_color = "#ffc107"
-        status_bg_color = "#fff3cd"
-        status_icon = "⚠️"
-        status_text = "Partial Shortage"
-        status_detail = f"{shortage_products} of {total_products} products have shortage in some periods"
+        status_color = "#28a745"
+        status_bg_color = "#d4edda"
+        status_icon = "✅"
+        status_text = "Supply Meets Demand"
+        status_detail = "All products have sufficient supply with proper timing"
     
     # Main status card
     st.markdown(f"""
@@ -112,140 +119,94 @@ def show_gap_summary(
     else:
         st.info("📊 **Backlog Tracking: OFF** - Each period calculated independently")
     
-    # Essential metrics
-    if track_backlog and 'backlog_to_next' in gap_df.columns:
-        col1, col2, col3, col4 = st.columns(4)
-    else:
-        col1, col2, col3 = st.columns(3)
+    # Show categorization breakdown
+    st.markdown("#### 🎯 Shortage Categorization")
+    col1, col2, col3, col4 = st.columns(4)
     
     with col1:
         st.metric(
-            "Total Shortage Quantity",
-            format_number(total_shortage),
-            delta=f"{shortage_products} products" if shortage_products > 0 else "No products",
-            delta_color="inverse" if shortage_products > 0 else "off"
+            "📦 Net Shortage",
+            f"{products_with_net_shortage} products",
+            delta=f"{format_number(net_shortage_qty)} units" if net_shortage_qty > 0 else "No shortage",
+            delta_color="inverse" if products_with_net_shortage > 0 else "off",
+            help="Products where total supply < total demand - Need new orders"
         )
     
     with col2:
-        coverage_rate = ((total_products - shortage_products) / total_products * 100) if total_products > 0 else 100
         st.metric(
-            "Product Coverage Rate",
-            f"{coverage_rate:.0f}%",
-            delta=f"{total_products - shortage_products} of {total_products} covered",
-            delta_color="normal" if coverage_rate >= 80 else "inverse"
+            "⏱️ Timing Gaps",
+            f"{products_with_timing_gap} products",
+            delta=f"{format_number(timing_gap_qty)} units" if timing_gap_qty > 0 else "No gaps",
+            delta_color="inverse" if products_with_timing_gap > 0 else "off",
+            help="Products with sufficient supply but timing mismatches - Need expedite/reschedule"
         )
     
     with col3:
-        if track_backlog and 'backlog_to_next' in gap_df.columns:
-            st.metric(
-                "Current Backlog",
-                format_number(total_backlog),
-                delta=f"{products_with_backlog} products" if products_with_backlog > 0 else "All clear",
-                delta_color="inverse" if total_backlog > 0 else "off"
-            )
-        else:
-            period_type = display_options.get('period_type', 'Weekly')
-            past_periods = gap_df[
-                gap_df['period'].apply(lambda x: is_past_period(str(x), period_type))
-            ]['period'].nunique()
-            
-            future_periods = total_periods - past_periods
-            st.metric(
-                "Planning Horizon",
-                f"{future_periods} {period_type.lower()} periods",
-                delta=f"{past_periods} periods passed" if past_periods > 0 else "All future",
-                delta_color="inverse" if past_periods > 0 else "off"
-            )
+        st.metric(
+            "✅ No Issues",
+            f"{products_no_issue} products",
+            delta=f"{(products_no_issue/total_products*100):.0f}% of total" if total_products > 0 else "0%",
+            delta_color="normal" if products_no_issue > 0 else "off"
+        )
     
-    if track_backlog and 'backlog_to_next' in gap_df.columns:
-        with col4:
-            st.metric(
-                "Peak Backlog",
-                format_number(peak_total_backlog),
-                delta=f"{products_ever_had_backlog} products affected",
-                delta_color="inverse" if peak_total_backlog > total_backlog else "normal"
-            )
+    with col4:
+        coverage_rate = ((products_no_issue) / total_products * 100) if total_products > 0 else 100
+        st.metric(
+            "Coverage Rate",
+            f"{coverage_rate:.0f}%",
+            delta=f"{total_products - products_with_net_shortage - products_with_timing_gap} fully covered",
+            delta_color="normal" if coverage_rate >= 80 else "inverse"
+        )
     
-    # Expandable details
-    with st.expander("📈 View Detailed Analysis", expanded=bool(shortage_products > 0 or products_with_backlog > 0)):
+    # Expandable action items
+    with st.expander("📋 View Action Items", expanded=(products_with_net_shortage > 0 or products_with_timing_gap > 0)):
         
-        if shortage_products > 0 or products_with_backlog > 0:
-            st.markdown("##### 🎯 Action Required")
+        if products_with_net_shortage > 0 or products_with_timing_gap > 0:
             
             action_col1, action_col2 = st.columns(2)
             
             with action_col1:
-                st.markdown("**🔴 Products with Issues:**")
-                
-                if track_backlog and 'backlog_to_next' in gap_df.columns:
-                    product_issues = gap_df.groupby('pt_code').agg({
+                st.markdown("##### 📦 Products Needing New Orders")
+                if products_with_net_shortage > 0:
+                    # Get top products with net shortage
+                    net_shortage_df = gap_df[gap_df['pt_code'].isin(net_shortage_products)]
+                    product_shortage = net_shortage_df.groupby('pt_code').agg({
                         'gap_quantity': lambda x: x[x < 0].sum() if any(x < 0) else 0,
-                        'backlog_to_next': 'last',
-                        'period': 'count'
-                    }).rename(columns={'period': 'affected_periods'})
+                        'total_demand_qty': 'sum',
+                        'supply_in_period': 'sum'
+                    })
+                    product_shortage['net_shortage'] = product_shortage['total_demand_qty'] - product_shortage['supply_in_period']
+                    product_shortage = product_shortage[product_shortage['net_shortage'] > 0]
+                    product_shortage = product_shortage.sort_values('net_shortage', ascending=False).head(5)
                     
-                    product_issues['total_issue'] = product_issues['gap_quantity'].abs() + product_issues['backlog_to_next']
-                    product_issues = product_issues[product_issues['total_issue'] > 0]
-                    product_issues = product_issues.sort_values('total_issue', ascending=False).head(5)
-                    
-                    for pt_code, row in product_issues.iterrows():
-                        issue_text = []
-                        if row['gap_quantity'] < 0:
-                            issue_text.append(f"Shortage: {format_number(abs(row['gap_quantity']))}")
-                        if row['backlog_to_next'] > 0:
-                            issue_text.append(f"Backlog: {format_number(row['backlog_to_next'])}")
-                        st.caption(f"• **{pt_code}**: {' | '.join(issue_text)} ({row['affected_periods']} periods)")
+                    for pt_code, row in product_shortage.iterrows():
+                        st.caption(f"• **{pt_code}**: Order {format_number(row['net_shortage'])} units")
                 else:
-                    product_shortages = gap_df[gap_df['gap_quantity'] < 0].groupby('pt_code').agg({
-                        'gap_quantity': 'sum',
-                        'period': 'count'
-                    }).rename(columns={'period': 'affected_periods'})
-                    product_shortages['gap_quantity'] = product_shortages['gap_quantity'].abs()
-                    product_shortages = product_shortages.sort_values('gap_quantity', ascending=False).head(5)
-                    
-                    for pt_code, row in product_shortages.iterrows():
-                        st.caption(f"• **{pt_code}**: {format_number(row['gap_quantity'])} units ({row['affected_periods']} periods)")
+                    st.caption("No products need new orders")
             
             with action_col2:
-                st.markdown("**📅 Periods with Issues:**")
-                
-                period_type = display_options.get('period_type', 'Weekly')
-                
-                if track_backlog and 'backlog_qty' in gap_df.columns:
-                    period_issues = gap_df.groupby('period').agg({
+                st.markdown("##### ⏱️ Products Needing Expedite/Reschedule")
+                if products_with_timing_gap > 0:
+                    # Get top products with timing gaps
+                    timing_gap_df = gap_df[gap_df['pt_code'].isin(timing_gap_products)]
+                    product_timing = timing_gap_df.groupby('pt_code').agg({
                         'gap_quantity': lambda x: x[x < 0].sum() if any(x < 0) else 0,
-                        'backlog_qty': 'sum',
-                        'pt_code': 'nunique'
-                    }).rename(columns={'pt_code': 'products_affected'})
+                        'period': lambda x: x[timing_gap_df.loc[x.index, 'gap_quantity'] < 0].iloc[0] if any(timing_gap_df.loc[x.index, 'gap_quantity'] < 0) else None
+                    })
+                    product_timing['gap_quantity'] = product_timing['gap_quantity'].abs()
+                    product_timing = product_timing[product_timing['gap_quantity'] > 0]
+                    product_timing = product_timing.sort_values('gap_quantity', ascending=False).head(5)
                     
-                    period_issues['has_issue'] = (period_issues['gap_quantity'] < 0) | (period_issues['backlog_qty'] > 0)
-                    period_issues = period_issues[period_issues['has_issue']]
-                    period_issues['total_issue'] = period_issues['gap_quantity'].abs() + period_issues['backlog_qty']
-                    period_issues = period_issues.sort_values('total_issue', ascending=False).head(5)
-                    
-                    for period, row in period_issues.iterrows():
-                        is_past = is_past_period(str(period), period_type)
-                        indicator = "🔴" if is_past else "🟡"
-                        issue_parts = []
-                        if row['gap_quantity'] < 0:
-                            issue_parts.append(f"Gap: {format_number(abs(row['gap_quantity']))}")
-                        if row['backlog_qty'] > 0:
-                            issue_parts.append(f"Backlog: {format_number(row['backlog_qty'])}")
-                        st.caption(f"{indicator} **{period}**: {' | '.join(issue_parts)} ({row['products_affected']} products)")
+                    for pt_code, row in product_timing.iterrows():
+                        period_str = row['period'] if pd.notna(row['period']) else "Unknown"
+                        st.caption(f"• **{pt_code}**: Expedite for {period_str}")
                 else:
-                    period_shortages = gap_df[gap_df['gap_quantity'] < 0].groupby('period').agg({
-                        'gap_quantity': 'sum',
-                        'pt_code': 'nunique'
-                    }).rename(columns={'pt_code': 'products_affected'})
-                    period_shortages['gap_quantity'] = period_shortages['gap_quantity'].abs()
-                    period_shortages = period_shortages.sort_values('gap_quantity', ascending=False).head(5)
-                    
-                    for period, row in period_shortages.iterrows():
-                        is_past = is_past_period(str(period), period_type)
-                        indicator = "🔴" if is_past else "🟡"
-                        st.caption(f"{indicator} **{period}**: {format_number(row['gap_quantity'])} units ({row['products_affected']} products)")
+                    st.caption("No products need schedule adjustments")
         
-        # Supply vs Demand Overview
+        else:
+            st.success("✅ No action items - All products are properly supplied")
+        
+        # Summary statistics
         st.markdown("##### 📊 Supply vs Demand Balance")
         
         if track_backlog and 'effective_demand' in gap_df.columns:
@@ -291,6 +252,7 @@ def show_gap_detail_table(
 ):
     """Show detailed GAP analysis table"""
     from .period_helpers import prepare_gap_detail_display, format_gap_display_df
+    from .shortage_analyzer import categorize_shortage_type
     
     st.markdown("### 📋 GAP Details by Product & Period")
     
@@ -298,7 +260,17 @@ def show_gap_detail_table(
         st.info("No data matches the selected filters.")
         return
     
-    st.caption(f"Showing {len(gap_df):,} records")
+    # Add shortage categorization info
+    shortage_categorization = categorize_shortage_type(gap_df)
+    
+    # Show filter status
+    filter_status = display_filters.get('period_filter', 'All')
+    if filter_status == "Net Shortage":
+        st.info(f"📦 Showing {len(shortage_categorization['net_shortage'])} products with net shortage (need new orders)")
+    elif filter_status == "Timing Gap":
+        st.info(f"⏱️ Showing {len(shortage_categorization['timing_gap'])} products with timing gaps (need expedite/reschedule)")
+    else:
+        st.caption(f"Showing {len(gap_df):,} records")
     
     # Prepare display dataframe
     display_df = prepare_gap_detail_display(
@@ -307,6 +279,17 @@ def show_gap_detail_table(
         df_demand_filtered, 
         df_supply_filtered
     )
+    
+    # Add shortage type column
+    def get_shortage_type(pt_code):
+        if pt_code in shortage_categorization['net_shortage']:
+            return "Net Shortage"
+        elif pt_code in shortage_categorization['timing_gap']:
+            return "Timing Gap"
+        else:
+            return "No Issue"
+    
+    display_df['shortage_type'] = display_df['pt_code'].apply(get_shortage_type)
     
     # Format the dataframe
     formatted_df = format_gap_display_df(display_df, display_filters)
@@ -321,16 +304,20 @@ def show_gap_detail_table(
 
 
 def show_gap_pivot_view(gap_df: pd.DataFrame, display_options: Dict[str, Any]):
-    """Show GAP pivot view with past period indicators"""
+    """Show GAP pivot view with past period indicators and shortage type info"""
     from .helpers import create_period_pivot
     from .formatters import format_number
     from .period_helpers import is_past_period
+    from .shortage_analyzer import categorize_shortage_type
     
     st.markdown("### 📊 Pivot View - GAP by Period")
     
     if gap_df.empty:
         st.info("No data to display in pivot view.")
         return
+    
+    # Get shortage categorization
+    shortage_categorization = categorize_shortage_type(gap_df)
     
     # Create pivot
     pivot_df = create_period_pivot(
@@ -348,10 +335,21 @@ def show_gap_pivot_view(gap_df: pd.DataFrame, display_options: Dict[str, Any]):
         st.info("No data to display after pivoting.")
         return
     
+    # Add shortage type column
+    def get_shortage_type(pt_code):
+        if pt_code in shortage_categorization['net_shortage']:
+            return "📦"  # Net shortage icon
+        elif pt_code in shortage_categorization['timing_gap']:
+            return "⏱️"  # Timing gap icon
+        else:
+            return "✅"  # No issue icon
+    
+    pivot_df.insert(2, 'Type', pivot_df['pt_code'].apply(get_shortage_type))
+    
     # Add past period indicators to column names
     renamed_columns = {}
     for col in pivot_df.columns:
-        if col not in ["product_name", "pt_code"]:
+        if col not in ["product_name", "pt_code", "Type"]:
             if is_past_period(str(col), display_options["period_type"]):
                 renamed_columns[col] = f"🔴 {col}"
     
@@ -359,10 +357,10 @@ def show_gap_pivot_view(gap_df: pd.DataFrame, display_options: Dict[str, Any]):
         pivot_df = pivot_df.rename(columns=renamed_columns)
     
     # Show legend
-    st.info("🔴 = Past period (already occurred)")
+    st.info("**Type:** 📦 = Net Shortage (need orders) | ⏱️ = Timing Gap (need reschedule) | ✅ = No Issue | **Period:** 🔴 = Past period")
     
     # Format numbers
-    for col in pivot_df.columns[2:]:
+    for col in pivot_df.columns[3:]:  # Skip product_name, pt_code, and Type columns
         pivot_df[col] = pivot_df[col].apply(lambda x: format_number(x))
     
     st.dataframe(pivot_df, use_container_width=True, height=400)

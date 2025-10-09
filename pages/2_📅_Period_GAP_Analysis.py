@@ -1,9 +1,9 @@
 # pages/2_📅_Period_GAP_Analysis.py
 """
-Period-based Supply-Demand GAP Analysis - Version 3.1
+Period-based Supply-Demand GAP Analysis - Version 3.2
 - Analyzes supply-demand gaps by time periods with carry-forward logic
 - Enhanced with exclude filters for better filtering control
-- Removed debug mode and dashboard navigation
+- Improved Period & Status filters to distinguish Net Shortage vs Timing Gap
 """
 
 import streamlit as st
@@ -33,7 +33,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from utils.auth import AuthManager
 
 # Constants
-VERSION = "3.1"
+VERSION = "3.2"
 MAX_EXPORT_ROWS = 50000
 DATA_LOAD_WARNING_SECONDS = 5
 DEFAULT_PERIOD_TYPE = "Weekly"
@@ -65,7 +65,7 @@ def handle_error(e: Exception) -> None:
     
     # Handle specific error types
     if "connection" in error_msg or "connect" in error_msg:
-        st.error("📌 Database connection issue. Please refresh the page and try again.")
+        st.error("🔌 Database connection issue. Please refresh the page and try again.")
     elif "permission" in error_msg or "denied" in error_msg:
         st.error("🔒 Access denied. Please check your permissions.")
     elif "timeout" in error_msg:
@@ -603,7 +603,7 @@ def apply_filters_to_data(
 
 
 def render_display_filters(calc_options: Dict[str, Any]) -> Dict[str, Any]:
-    """Render display filters for GAP results"""
+    """Render display filters for GAP results with improved shortage categorization"""
     st.markdown("### 🔍 Display Filters")
     st.caption("Filter the calculated results. Changes apply immediately.")
     
@@ -632,11 +632,22 @@ def render_display_filters(calc_options: Dict[str, Any]) -> Dict[str, Any]:
             key="pgap_show_supply_only"
         )
     
-    # Period/Status Filters
+    # Period/Status Filters - UPDATED OPTIONS
     st.markdown("#### Period & Status Filters")
+    
+    # Add help text explaining the difference
+    with st.expander("ℹ️ Filter Definitions", expanded=False):
+        st.markdown("""
+        - **All**: Show all products and periods
+        - **Net Shortage**: Products where total supply < total demand (need new orders)
+        - **Timing Gap**: Products with sufficient supply but timing mismatches (need expedite/reschedule)
+        - **Past Periods Only**: Show only periods that have already occurred
+        - **Future Periods Only**: Show only upcoming periods
+        """)
+    
     period_filter = st.radio(
         "Show:",
-        options=["All", "Shortage Only", "Past Periods Only", "Future Periods Only", "Critical Shortage Only"],
+        options=["All", "Net Shortage", "Timing Gap", "Past Periods Only", "Future Periods Only"],
         horizontal=True,
         key="pgap_period_filter"
     )
@@ -668,8 +679,9 @@ def apply_display_filters(
     df_supply_filtered: pd.DataFrame,
     stored_calc_options: Dict[str, Any]
 ) -> pd.DataFrame:
-    """Apply display filters to GAP results and re-sort"""
+    """Apply display filters to GAP results with improved shortage categorization"""
     from utils.period_gap.period_helpers import is_past_period, parse_week_period, parse_month_period
+    from utils.period_gap.shortage_analyzer import categorize_shortage_type
     
     gap_df_filtered = gap_df.copy()
     
@@ -689,12 +701,21 @@ def apply_display_filters(
         if products_to_show:
             gap_df_filtered = gap_df_filtered[gap_df_filtered['pt_code'].isin(products_to_show)]
     
-    # Filter by period/status
+    # Filter by period/status - UPDATED LOGIC
     period_filter = display_filters['period_filter']
     period_type = stored_calc_options['period_type']
     
-    if period_filter == "Shortage Only":
-        gap_df_filtered = gap_df_filtered[gap_df_filtered["gap_quantity"] < 0]
+    if period_filter == "Net Shortage":
+        # Products with net shortage (total supply < total demand)
+        # Check final period or overall balance
+        products_with_net_shortage = categorize_shortage_type(gap_df_filtered)['net_shortage']
+        gap_df_filtered = gap_df_filtered[gap_df_filtered['pt_code'].isin(products_with_net_shortage)]
+        
+    elif period_filter == "Timing Gap":
+        # Products with timing gap (sufficient supply but timing mismatch)
+        products_with_timing_gap = categorize_shortage_type(gap_df_filtered)['timing_gap']
+        gap_df_filtered = gap_df_filtered[gap_df_filtered['pt_code'].isin(products_with_timing_gap)]
+        
     elif period_filter == "Past Periods Only":
         gap_df_filtered = gap_df_filtered[
             gap_df_filtered['period'].apply(lambda x: is_past_period(str(x), period_type))
@@ -702,11 +723,6 @@ def apply_display_filters(
     elif period_filter == "Future Periods Only":
         gap_df_filtered = gap_df_filtered[
             ~gap_df_filtered['period'].apply(lambda x: is_past_period(str(x), period_type))
-        ]
-    elif period_filter == "Critical Shortage Only":
-        gap_df_filtered = gap_df_filtered[
-            (gap_df_filtered["gap_quantity"] < 0) & 
-            (gap_df_filtered["fulfillment_rate_percent"] < 50)
         ]
     
     # RE-SORT after filtering to ensure proper order
@@ -952,13 +968,32 @@ def main():
                         )
                     
                     with col2:
-                        if (gap_df_filtered["gap_quantity"] < 0).any():
-                            shortage_df = gap_df_filtered[gap_df_filtered["gap_quantity"] < 0]
-                            shortage_excel = export_to_excel(shortage_df, filters, False)
+                        # Export based on selected filter
+                        if display_filters['period_filter'] == "Net Shortage":
+                            export_label = "📦 Export Net Shortage"
+                            export_prefix = "net_shortage"
+                        elif display_filters['period_filter'] == "Timing Gap":
+                            export_label = "⏱️ Export Timing Gaps"  
+                            export_prefix = "timing_gap"
+                        elif (gap_df_filtered["gap_quantity"] < 0).any():
+                            export_label = "🚨 Export Shortage Only"
+                            export_prefix = "shortage_report"
+                        else:
+                            export_label = None
+                        
+                        if export_label:
+                            if display_filters['period_filter'] in ["Net Shortage", "Timing Gap"]:
+                                # Already filtered
+                                shortage_excel = export_to_excel(gap_df_filtered, filters, False)
+                            else:
+                                # Filter for shortage only
+                                shortage_df = gap_df_filtered[gap_df_filtered["gap_quantity"] < 0]
+                                shortage_excel = export_to_excel(shortage_df, filters, False)
+                            
                             st.download_button(
-                                "🚨 Export Shortage Only",
+                                export_label,
                                 data=shortage_excel,
-                                file_name=f"shortage_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                                file_name=f"{export_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                             )
             else:
