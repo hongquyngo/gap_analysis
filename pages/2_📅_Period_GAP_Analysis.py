@@ -1,9 +1,9 @@
 # pages/2_📅_Period_GAP_Analysis.py
 """
-Period-based Supply-Demand GAP Analysis - Version 3.0
+Period-based Supply-Demand GAP Analysis - Version 3.1
 - Analyzes supply-demand gaps by time periods with carry-forward logic
-- Refactored with main() wrapper pattern similar to Net GAP
-- Fixed period sorting with separate indicator column
+- Enhanced with exclude filters for better filtering control
+- Removed debug mode and dashboard navigation
 """
 
 import streamlit as st
@@ -33,7 +33,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from utils.auth import AuthManager
 
 # Constants
-VERSION = "3.0"
+VERSION = "3.1"
 MAX_EXPORT_ROWS = 50000
 DATA_LOAD_WARNING_SECONDS = 5
 DEFAULT_PERIOD_TYPE = "Weekly"
@@ -207,7 +207,7 @@ def initialize_filter_data(_data_loader) -> Dict[str, Any]:
 
 
 def render_source_selection(filter_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Render demand and supply source selection"""
+    """Render demand and supply source selection with customer filter"""
     st.markdown("### 📊 Data Source Selection")
     
     col1, col2 = st.columns(2)
@@ -237,16 +237,28 @@ def render_source_selection(filter_data: Dict[str, Any]) -> Dict[str, Any]:
         else:
             include_converted = False
         
-        # Customer filter
+        # Customer filter with exclude option
         st.markdown("##### Customer Filter")
-        all_customers = filter_data.get('customers', [])
         
-        selected_customers = st.multiselect(
-            "Select Customers", 
-            options=all_customers,
-            key="pgap_customer",
-            placeholder="All customers" if all_customers else "No customers available"
-        )
+        # Create columns for customer filter and exclude checkbox
+        cust_col1, cust_col2 = st.columns([4, 1])
+        
+        with cust_col1:
+            all_customers = filter_data.get('customers', [])
+            selected_customers = st.multiselect(
+                "Select Customers", 
+                options=all_customers,
+                key="pgap_customer",
+                placeholder="All customers" if all_customers else "No customers available"
+            )
+        
+        with cust_col2:
+            exclude_customers = st.checkbox(
+                "🚫",
+                value=False,
+                key="pgap_exclude_customers",
+                help="Exclude selected customers instead of including them"
+            )
     
     with col2:
         st.markdown("#### 📥 Supply Sources")
@@ -280,19 +292,25 @@ def render_source_selection(filter_data: Dict[str, Any]) -> Dict[str, Any]:
         "supply": selected_supply_sources,
         "include_converted": include_converted,
         "exclude_expired": exclude_expired,
-        "selected_customers": selected_customers
+        "selected_customers": selected_customers,
+        "exclude_customers": exclude_customers
     }
 
 
 def render_filters(filter_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Render standard filters for GAP analysis"""
-    with st.expander("🔎 Filters", expanded=True):
+    """Render standard filters for GAP analysis with exclude options"""
+    with st.expander("🔍 Filters", expanded=True):
         filters = {}
         
-        # Row 1: Entity, Product, Brand
-        col1, col2, col3 = st.columns(3)
+        # Main Filters - All on one row with proportional widths
+        st.markdown("#### Main Filters")
         
-        with col1:
+        # Create columns with proportions: Legal Entity (3), Product (5), Brand (2)
+        # Total = 10 parts, plus small columns for exclude checkboxes
+        filter_cols = st.columns([3, 0.5, 5, 0.5, 2, 0.5])
+        
+        # Legal Entity filter (3 parts + 0.5 for checkbox)
+        with filter_cols[0]:
             all_entities = filter_data.get('entities', [])
             filters['entity'] = st.multiselect(
                 "Legal Entity",
@@ -300,8 +318,16 @@ def render_filters(filter_data: Dict[str, Any]) -> Dict[str, Any]:
                 key="pgap_entity_filter",
                 placeholder="All entities" if all_entities else "No entities available"
             )
+        with filter_cols[1]:
+            filters['exclude_entity'] = st.checkbox(
+                "🚫",
+                value=False,
+                key="pgap_exclude_entity",
+                help="Exclude selected legal entities"
+            )
         
-        with col2:
+        # Product filter (5 parts + 0.5 for checkbox)
+        with filter_cols[2]:
             # Use the formatted product options
             product_options = filter_data.get('product_options', [])
             selected_products = st.multiselect(
@@ -321,13 +347,30 @@ def render_filters(filter_data: Dict[str, Any]) -> Dict[str, Any]:
                     pt_code = selection.strip()
                 filters['product'].append(pt_code)
         
-        with col3:
+        with filter_cols[3]:
+            filters['exclude_product'] = st.checkbox(
+                "🚫",
+                value=False,
+                key="pgap_exclude_product",
+                help="Exclude selected products"
+            )
+        
+        # Brand filter (2 parts + 0.5 for checkbox)
+        with filter_cols[4]:
             all_brands = filter_data.get('brands', [])
             filters['brand'] = st.multiselect(
                 "Brand",
                 all_brands,
                 key="pgap_brand_filter",
                 placeholder="All brands" if all_brands else "No brands available"
+            )
+        
+        with filter_cols[5]:
+            filters['exclude_brand'] = st.checkbox(
+                "🚫",
+                value=False,
+                key="pgap_exclude_brand",
+                help="Exclude selected brands"
             )
         
         # Date range with proper defaults
@@ -356,11 +399,21 @@ def render_filters(filter_data: Dict[str, Any]) -> Dict[str, Any]:
                 key="pgap_end_date"
             )
         
-        # Show active filters
+        # Show active filters summary
         active_filters = sum(1 for k, v in filters.items() 
-                           if k not in ['start_date', 'end_date'] and v and v != [])
-        if active_filters > 0:
-            st.success(f"🔍 {active_filters} filters active")
+                           if k not in ['start_date', 'end_date'] 
+                           and not k.startswith('exclude_')
+                           and v and v != [])
+        excluded_filters = sum(1 for k, v in filters.items()
+                             if k.startswith('exclude_') and v)
+        
+        if active_filters > 0 or excluded_filters > 0:
+            status_text = []
+            if active_filters > 0:
+                status_text.append(f"🔍 {active_filters} filters active")
+            if excluded_filters > 0:
+                status_text.append(f"🚫 {excluded_filters} exclusions active")
+            st.success(" | ".join(status_text))
     
     return filters
 
@@ -405,9 +458,10 @@ def apply_filters_to_data(
     df_demand: pd.DataFrame,
     df_supply: pd.DataFrame,
     filters: Dict[str, Any],
-    selected_customers: List[str]
+    selected_customers: List[str],
+    exclude_customers: bool = False
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Apply filters to demand and supply dataframes"""
+    """Apply filters to demand and supply dataframes with exclude logic"""
     
     filtered_demand = df_demand.copy()
     filtered_supply = df_supply.copy()
@@ -419,19 +473,53 @@ def apply_filters_to_data(
     if 'pt_code' in filtered_supply.columns:
         filtered_supply['pt_code'] = filtered_supply['pt_code'].astype(str).str.strip()
     
-    # Apply filters to DEMAND
-    if filters.get('entity'):
-        filtered_demand = filtered_demand[filtered_demand['legal_entity'].isin(filters['entity'])]
+    # Apply filters to DEMAND with exclude logic
     
+    # Legal Entity filter
+    if filters.get('entity'):
+        if filters.get('exclude_entity', False):
+            # Exclude selected entities
+            filtered_demand = filtered_demand[~filtered_demand['legal_entity'].isin(filters['entity'])]
+        else:
+            # Include only selected entities
+            filtered_demand = filtered_demand[filtered_demand['legal_entity'].isin(filters['entity'])]
+    
+    # Product filter
     if filters.get('product'):
         clean_products = [str(p).strip() for p in filters['product']]
-        filtered_demand = filtered_demand[filtered_demand['pt_code'].isin(clean_products)]
+        if filters.get('exclude_product', False):
+            # Exclude selected products
+            filtered_demand = filtered_demand[~filtered_demand['pt_code'].isin(clean_products)]
+        else:
+            # Include only selected products
+            filtered_demand = filtered_demand[filtered_demand['pt_code'].isin(clean_products)]
     
+    # Brand filter - Clean brand values for better matching
     if filters.get('brand'):
-        filtered_demand = filtered_demand[filtered_demand['brand'].isin(filters['brand'])]
+        # Clean brand values in both filter and dataframe for proper matching
+        clean_brands = [str(b).strip().lower() for b in filters['brand']]
+        
+        # Create a temporary column with cleaned brand values for comparison
+        filtered_demand['_brand_clean'] = filtered_demand['brand'].astype(str).str.strip().str.lower()
+        
+        if filters.get('exclude_brand', False):
+            # Exclude selected brands
+            filtered_demand = filtered_demand[~filtered_demand['_brand_clean'].isin(clean_brands)]
+        else:
+            # Include only selected brands
+            filtered_demand = filtered_demand[filtered_demand['_brand_clean'].isin(clean_brands)]
+        
+        # Remove temporary column
+        filtered_demand = filtered_demand.drop(columns=['_brand_clean'])
     
+    # Customer filter with exclude logic
     if selected_customers and 'customer' in filtered_demand.columns:
-        filtered_demand = filtered_demand[filtered_demand['customer'].isin(selected_customers)]
+        if exclude_customers:
+            # Exclude selected customers
+            filtered_demand = filtered_demand[~filtered_demand['customer'].isin(selected_customers)]
+        else:
+            # Include only selected customers
+            filtered_demand = filtered_demand[filtered_demand['customer'].isin(selected_customers)]
     
     # Apply date filter for demand
     if 'etd' in filtered_demand.columns and filters.get('start_date') and filters.get('end_date'):
@@ -446,16 +534,44 @@ def apply_filters_to_data(
         )
         filtered_demand = filtered_demand[date_mask]
     
-    # Apply filters to SUPPLY
-    if filters.get('entity'):
-        filtered_supply = filtered_supply[filtered_supply['legal_entity'].isin(filters['entity'])]
+    # Apply filters to SUPPLY with exclude logic
     
+    # Legal Entity filter
+    if filters.get('entity'):
+        if filters.get('exclude_entity', False):
+            # Exclude selected entities
+            filtered_supply = filtered_supply[~filtered_supply['legal_entity'].isin(filters['entity'])]
+        else:
+            # Include only selected entities
+            filtered_supply = filtered_supply[filtered_supply['legal_entity'].isin(filters['entity'])]
+    
+    # Product filter
     if filters.get('product'):
         clean_products = [str(p).strip() for p in filters['product']]
-        filtered_supply = filtered_supply[filtered_supply['pt_code'].isin(clean_products)]
+        if filters.get('exclude_product', False):
+            # Exclude selected products
+            filtered_supply = filtered_supply[~filtered_supply['pt_code'].isin(clean_products)]
+        else:
+            # Include only selected products
+            filtered_supply = filtered_supply[filtered_supply['pt_code'].isin(clean_products)]
     
+    # Brand filter - Clean brand values for better matching
     if filters.get('brand'):
-        filtered_supply = filtered_supply[filtered_supply['brand'].isin(filters['brand'])]
+        # Clean brand values in both filter and dataframe for proper matching
+        clean_brands = [str(b).strip().lower() for b in filters['brand']]
+        
+        # Create a temporary column with cleaned brand values for comparison
+        filtered_supply['_brand_clean'] = filtered_supply['brand'].astype(str).str.strip().str.lower()
+        
+        if filters.get('exclude_brand', False):
+            # Exclude selected brands
+            filtered_supply = filtered_supply[~filtered_supply['_brand_clean'].isin(clean_brands)]
+        else:
+            # Include only selected brands
+            filtered_supply = filtered_supply[filtered_supply['_brand_clean'].isin(clean_brands)]
+        
+        # Remove temporary column
+        filtered_supply = filtered_supply.drop(columns=['_brand_clean'])
     
     # Apply date filters to supply
     if 'date_ref' in filtered_supply.columns and filters.get('start_date') and filters.get('end_date'):
@@ -469,6 +585,19 @@ def apply_filters_to_data(
             ((filtered_supply['date_ref'] >= start_date) & (filtered_supply['date_ref'] <= end_date))
         )
         filtered_supply = filtered_supply[date_mask]
+    
+    # Debug: Show filter status in sidebar
+    with st.sidebar:
+        st.markdown("### 🔍 Active Filters")
+        if filters.get('brand'):
+            mode = "Excluding" if filters.get('exclude_brand') else "Including"
+            st.info(f"Brand: {mode} {', '.join(filters['brand'])}")
+        if filters.get('entity'):
+            mode = "Excluding" if filters.get('exclude_entity') else "Including"
+            st.info(f"Entity: {mode} {', '.join(filters['entity'])}")
+        if filters.get('product'):
+            mode = "Excluding" if filters.get('exclude_product') else "Including"
+            st.info(f"Products: {mode} {len(filters['product'])} items")
     
     return filtered_demand, filtered_supply
 
@@ -635,20 +764,13 @@ def main():
         update_filter_cache
     )
     
-    # Debug Mode
-    col_debug1, col_debug2 = st.columns([6, 1])
-    with col_debug2:
-        debug_mode = st.checkbox("🛠 Debug Mode", value=False, key="period_gap_debug")
-    
-    if debug_mode:
-        st.info("🛠 Debug Mode is ON")
-    
-    # Page Header
+    # Page Header (without dashboard button)
     display_components.show_page_header(
         title="Period-Based GAP Analysis",
         icon="📅",
         prev_page=None,  # Set to None to avoid navigation errors
-        next_page=None
+        next_page=None,
+        show_dashboard_button=False  # Disable dashboard button
     )
     
     # User info in sidebar
@@ -662,7 +784,7 @@ def main():
     try:
         # Load filter data
         with st.spinner("Initializing filters..."):
-            filter_data = initialize_filter_data(data_loader)  # Still pass without underscore when calling
+            filter_data = initialize_filter_data(data_loader)
             
             # Update filter cache for use by filter functions
             update_filter_cache(
@@ -680,17 +802,11 @@ def main():
         # Render source selection
         selected_sources = render_source_selection(filter_data)
         
-        st.markdown("---")
-        
         # Render filters
         filters = render_filters(filter_data)
         
-        st.markdown("---")
-        
         # Render calculation options
         calc_options = render_calculation_options()
-        
-        st.markdown("---")
         
         # Run Analysis Button
         if st.button("🚀 Run Period GAP Analysis", type="primary", use_container_width=True):
@@ -711,12 +827,13 @@ def main():
                         selected_sources["exclude_expired"]
                     )
                 
-                # Apply filters
+                # Apply filters with exclude logic
                 df_demand_filtered, df_supply_filtered = apply_filters_to_data(
                     df_demand_all,
                     df_supply_all,
                     filters,
-                    selected_sources.get("selected_customers", [])
+                    selected_sources.get("selected_customers", []),
+                    selected_sources.get("exclude_customers", False)
                 )
                 
                 # Apply date exclusion if requested
@@ -753,8 +870,22 @@ def main():
             df_supply_filtered = state['supply']
             stored_calc_options = state['calc_options']
             
-            # Calculate GAP if not cached or options changed
-            cache_key = f"{stored_calc_options['period_type']}_{stored_calc_options['track_backlog']}"
+            # Create cache key that includes filters to detect changes
+            import hashlib
+            import json
+            
+            # Create a unique cache key based on all parameters
+            cache_params = {
+                'period_type': stored_calc_options['period_type'],
+                'track_backlog': stored_calc_options['track_backlog'],
+                'demand_count': len(df_demand_filtered),
+                'supply_count': len(df_supply_filtered),
+                # Add a hash of the actual data to detect filter changes
+                'demand_hash': hashlib.md5(pd.util.hash_pandas_object(df_demand_filtered).values).hexdigest() if not df_demand_filtered.empty else 'empty',
+                'supply_hash': hashlib.md5(pd.util.hash_pandas_object(df_supply_filtered).values).hexdigest() if not df_supply_filtered.empty else 'empty'
+            }
+            
+            cache_key = json.dumps(cache_params, sort_keys=True)
             
             if 'pgap_result_cache_key' not in st.session_state or st.session_state['pgap_result_cache_key'] != cache_key:
                 with st.spinner("Calculating supply-demand gaps..."):

@@ -1,4 +1,8 @@
 # utils/period_gap/display_components.py - Reusable Display Components
+"""
+Enhanced Display Components with Exclude Filter Support
+Version 2.0 - Added reusable exclude filter components
+"""
 
 import streamlit as st
 import pandas as pd
@@ -17,7 +21,8 @@ class DisplayComponents:
     def show_page_header(title: str, icon: str, 
                         prev_page: Optional[str] = None, 
                         next_page: Optional[str] = None,
-                        show_user: bool = True):
+                        show_user: bool = True,
+                        show_dashboard_button: bool = True):
         """Show standardized page header with navigation and user info"""
         # Navigation row
         col1, col2, col3 = st.columns([1, 4, 1])
@@ -54,13 +59,12 @@ class DisplayComponents:
                 if st.button(f"{page_name} →"):
                     st.switch_page(next_page)
         
-        # Dashboard button row
-        col1, col2, col3 = st.columns([1, 4, 1])
-        with col1:
-            if st.button("🏠 Dashboard", use_container_width=False):
-                st.switch_page("main.py")
-        
-        st.markdown("---")
+        # Dashboard button row (only if enabled)
+        if show_dashboard_button:
+            col1, col2, col3 = st.columns([1, 4, 1])
+            with col1:
+                if st.button("🏠 Dashboard", use_container_width=False):
+                    st.switch_page("main.py")
 
     @staticmethod
     def _get_page_action_word(title: str) -> str:
@@ -281,7 +285,7 @@ class DisplayComponents:
     def show_debug_info(info: Dict[str, Any]):
         """Show debug information panel"""
         if st.session_state.get('debug_mode', False):
-            with st.expander("🐛 Debug Information", expanded=True):
+            with st.expander("🛠 Debug Information", expanded=True):
                 for key, value in info.items():
                     st.write(f"**{key}:** {value}")
     
@@ -362,10 +366,112 @@ class DisplayComponents:
                 st.metric("Quantity", format_number(row.quantity), label_visibility="collapsed")
                 st.metric("Value", format_currency(row.value_in_usd, "USD", 0), label_visibility="collapsed")
 
+    # === NEW EXCLUDE FILTER COMPONENTS ===
+    
+    @staticmethod
+    def render_multiselect_with_exclude(
+        label: str,
+        options: List[Any],
+        key_prefix: str,
+        placeholder: str = None,
+        help_text: str = None,
+        col_ratio: List[int] = [5, 1]
+    ) -> Tuple[List[Any], bool]:
+        """
+        Render a multiselect with exclude checkbox
+        
+        Args:
+            label: Label for the multiselect
+            options: List of options
+            key_prefix: Prefix for widget keys
+            placeholder: Placeholder text
+            help_text: Help text for multiselect
+            col_ratio: Column width ratio [multiselect, checkbox]
+        
+        Returns:
+            Tuple of (selected_values, exclude_flag)
+        """
+        col_main, col_excl = st.columns(col_ratio)
+        
+        with col_main:
+            if placeholder is None:
+                placeholder = f"All {label.lower()}"
+            
+            selected = st.multiselect(
+                label,
+                options=options,
+                key=f"{key_prefix}_select",
+                placeholder=placeholder if options else f"No {label.lower()} available",
+                help=help_text
+            )
+        
+        with col_excl:
+            exclude = st.checkbox(
+                "Excl 🚫",
+                value=False,
+                key=f"{key_prefix}_exclude",
+                help=f"Exclude selected {label.lower()} instead of including them"
+            )
+        
+        return selected, exclude
+    
+    @staticmethod
+    def apply_filter_with_exclude(
+        df: pd.DataFrame,
+        column: str,
+        selected_values: List[Any],
+        exclude: bool
+    ) -> pd.DataFrame:
+        """
+        Apply filter with exclude logic
+        
+        Args:
+            df: DataFrame to filter
+            column: Column name to filter on
+            selected_values: List of selected values
+            exclude: Whether to exclude selected values
+        
+        Returns:
+            Filtered DataFrame
+        """
+        if not selected_values:
+            return df
+        
+        if exclude:
+            # Exclude selected values
+            return df[~df[column].isin(selected_values)]
+        else:
+            # Include only selected values
+            return df[df[column].isin(selected_values)]
+    
+    @staticmethod
+    def show_filter_status(filters: Dict[str, Any]) -> None:
+        """
+        Show filter status summary with exclude counts
+        
+        Args:
+            filters: Dictionary of filters with exclude flags
+        """
+        # Count active filters and exclusions
+        active_filters = 0
+        excluded_filters = 0
+        
+        for key, value in filters.items():
+            if key.startswith('exclude_') and value:
+                excluded_filters += 1
+            elif not key.startswith('exclude_') and value and value != []:
+                if key not in ['start_date', 'end_date']:
+                    active_filters += 1
+        
+        if active_filters > 0 or excluded_filters > 0:
+            status_text = []
+            if active_filters > 0:
+                status_text.append(f"🔍 {active_filters} filters active")
+            if excluded_filters > 0:
+                status_text.append(f"🚫 {excluded_filters} exclusions active")
+            st.success(" | ".join(status_text))
 
-# Phần thêm vào cuối file display_components.py hiện tại
-
-    # === NEW ENHANCED METHODS ===
+    # === ENHANCED METHODS WITH EXCLUDE SUPPORT ===
     
     @staticmethod
     def render_page_layout(
@@ -388,28 +494,17 @@ class DisplayComponents:
             layout="wide"
         )
         
-        # Debug mode toggle
-        col_debug1, col_debug2 = st.columns([6, 1])
-        with col_debug2:
-            debug_mode = st.checkbox(
-                "🐛 Debug Mode", 
-                value=False, 
-                key=f"{page_config.get('key_prefix', 'page')}_debug_mode"
-            )
-        
-        if debug_mode:
-            st.info("🐛 Debug Mode is ON - Additional information will be displayed")
-        
         # Page header with navigation
         DisplayComponents.show_page_header(
             title=page_config['title'],
             icon=page_config['icon'],
             prev_page=page_config.get('prev_page'),
-            next_page=page_config.get('next_page')
+            next_page=page_config.get('next_page'),
+            show_dashboard_button=page_config.get('show_dashboard_button', True)
         )
         
         # Render main content
-        content_renderer(debug_mode=debug_mode, **kwargs)
+        content_renderer(**kwargs)
         
         # Footer
         st.markdown("---")
@@ -583,7 +678,6 @@ class DisplayComponents:
         Standardized filter option radio buttons
         Used in detail tables for all pages
         """
-        # st.markdown("**Filter Options:**")
         return st.radio(
             "Select filter:",
             options=options,
@@ -676,104 +770,6 @@ class DisplayComponents:
             st.dataframe(display_df_formatted, use_container_width=True, height=height)
     
     @staticmethod
-    def render_pivot_section(
-        df: pd.DataFrame,
-        create_pivot_func: Callable,
-        period_type: str,
-        show_totals: bool = True,
-        title: str = "### 📊 Pivot View",
-        key_prefix: str = "pivot"
-    ):
-        """
-        Standardized pivot view section
-        
-        Args:
-            df: Source dataframe
-            create_pivot_func: Function to create pivot
-            period_type: Period type for grouping
-            show_totals: Whether to show totals
-            title: Section title
-            key_prefix: For unique keys
-        """
-        st.markdown(title)
-        
-        if df.empty:
-            st.info("No data to display")
-            return
-        
-        # Create pivot
-        pivot_df = create_pivot_func(df, period_type)
-        
-        if pivot_df.empty:
-            st.info("No data to display after grouping")
-            return
-        
-        # Show legend for past periods
-        st.info("🔴 = Past period (already occurred)")
-        
-        # Display pivot
-        st.dataframe(pivot_df, use_container_width=True, height=400)
-        
-        # Show totals if requested
-        if show_totals:
-            DisplayComponents.show_period_totals(df, period_type, key_prefix)
-    
-    @staticmethod
-    def show_period_totals(
-        df: pd.DataFrame,
-        period_type: str,
-        key_prefix: str,
-        value_columns: List[str] = None
-    ):
-        """
-        Show period totals with indicators
-        Standardized for all pages
-        """
-        st.markdown("#### 🔢 Column Totals")
-        
-        # Implementation based on common pattern from all pages
-        # This would need the actual implementation from the pages
-        st.info("Period totals implementation needed")
-    
-    @staticmethod
-    def render_export_section(
-        export_configs: List[Dict[str, Any]],
-        title: str = "### 📤 Export Options"
-    ):
-        """
-        Standardized export section
-        
-        Args:
-            export_configs: List of dicts with 'data', 'filename', 'label'
-        """
-        st.markdown(title)
-        
-        cols = st.columns(len(export_configs))
-        for idx, (col, config) in enumerate(zip(cols, export_configs)):
-            with col:
-                if config.get('data') is not None and not config['data'].empty:
-                    DisplayComponents.show_export_button(
-                        df=config['data'],
-                        filename=config['filename'],
-                        button_label=config.get('label', '📥 Download')
-                    )
-    
-    @staticmethod
-    def render_action_section(
-        actions: List[Dict[str, Any]],
-        title: str = "### 🎯 Actions"
-    ):
-        """
-        Standardized action buttons section
-        
-        Args:
-            actions: List of action configs for show_action_buttons
-        """
-        st.markdown("---")
-        st.markdown(title)
-        DisplayComponents.show_action_buttons(actions)
-    
-    @staticmethod
     def show_no_data_message(
         message: str = "No data available.",
         suggestion: Optional[str] = None
@@ -785,7 +781,7 @@ class DisplayComponents:
     
     @staticmethod
     def show_data_loading_spinner(
-        func: Callable,  # Function first (no default)
+        func: Callable,
         message: str = "Loading data...",
         *args,
         **kwargs

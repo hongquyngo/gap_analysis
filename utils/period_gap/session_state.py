@@ -1,15 +1,15 @@
 # utils/period_gap/session_state.py
 """
 Complete Session State Management for Period GAP Analysis
-Includes cross-page data persistence
+Version 2.0 - Added support for exclude filter states
 """
 
 import streamlit as st
-from typing import Any
+from typing import Any, Dict, List
 from datetime import datetime
 
 def initialize_session_state():
-    """Initialize all required session state variables for Period GAP"""
+    """Initialize all required session state variables for Period GAP with exclude filters"""
     
     # Core session state defaults
     defaults = {
@@ -56,8 +56,15 @@ def initialize_session_state():
         'pgap_gap_df': None,
         'pgap_result_cache_key': None,
         
-        # Debug mode
-        'period_gap_debug_mode': False
+        # === NEW: Exclude filter states ===
+        'pgap_exclude_entity': False,
+        'pgap_exclude_product': False,
+        'pgap_exclude_brand': False,
+        'pgap_exclude_customers': False,
+        'pgap_selected_entities_excluded': [],
+        'pgap_selected_products_excluded': [],
+        'pgap_selected_brands_excluded': [],
+        'pgap_selected_customers_excluded': []
     }
     
     for key, default_value in defaults.items():
@@ -88,6 +95,58 @@ def set_session_value(key: str, value: Any):
         value: Value to set
     """
     st.session_state[key] = value
+
+
+def save_filter_state(filter_config: Dict[str, Any]):
+    """
+    Save filter configuration including exclude states
+    
+    Args:
+        filter_config: Dictionary containing filter settings and exclude flags
+    """
+    # Save main filter selections
+    if 'entity' in filter_config:
+        st.session_state['pgap_selected_entities'] = filter_config['entity']
+        st.session_state['pgap_exclude_entity'] = filter_config.get('exclude_entity', False)
+    
+    if 'product' in filter_config:
+        st.session_state['pgap_selected_products'] = filter_config['product']
+        st.session_state['pgap_exclude_product'] = filter_config.get('exclude_product', False)
+    
+    if 'brand' in filter_config:
+        st.session_state['pgap_selected_brands'] = filter_config['brand']
+        st.session_state['pgap_exclude_brand'] = filter_config.get('exclude_brand', False)
+    
+    if 'customers' in filter_config:
+        st.session_state['pgap_selected_customers'] = filter_config['customers']
+        st.session_state['pgap_exclude_customers'] = filter_config.get('exclude_customers', False)
+    
+    # Save date range
+    if 'start_date' in filter_config:
+        st.session_state['pgap_start_date'] = filter_config['start_date']
+    if 'end_date' in filter_config:
+        st.session_state['pgap_end_date'] = filter_config['end_date']
+
+
+def get_filter_state() -> Dict[str, Any]:
+    """
+    Get current filter configuration including exclude states
+    
+    Returns:
+        Dictionary with current filter settings
+    """
+    return {
+        'entity': get_session_value('pgap_selected_entities', []),
+        'exclude_entity': get_session_value('pgap_exclude_entity', False),
+        'product': get_session_value('pgap_selected_products', []),
+        'exclude_product': get_session_value('pgap_exclude_product', False),
+        'brand': get_session_value('pgap_selected_brands', []),
+        'exclude_brand': get_session_value('pgap_exclude_brand', False),
+        'customers': get_session_value('pgap_selected_customers', []),
+        'exclude_customers': get_session_value('pgap_exclude_customers', False),
+        'start_date': get_session_value('pgap_start_date'),
+        'end_date': get_session_value('pgap_end_date')
+    }
 
 
 def clear_period_gap_cache():
@@ -123,6 +182,10 @@ def save_period_gap_state(data: dict):
         st.session_state['demand_filtered'] = data['demand']
     if 'supply' in data:
         st.session_state['supply_filtered'] = data['supply']
+    
+    # Save filter configuration if present
+    if 'filters' in data:
+        save_filter_state(data['filters'])
 
 
 def get_period_gap_state() -> dict:
@@ -195,14 +258,16 @@ def get_gap_analysis_for_allocation() -> dict:
             'demand_df': st.session_state.get('demand_filtered'),
             'supply_df': st.session_state.get('supply_filtered'),
             'period_type': st.session_state.get('period_gap_period_type', 'Weekly'),
-            'analysis_time': st.session_state.get('last_analysis_time')
+            'analysis_time': st.session_state.get('last_analysis_time'),
+            'filters': get_filter_state()  # Include filter configuration
         }
     return {
         'gap_df': None,
         'demand_df': None,
         'supply_df': None,
         'period_type': 'Weekly',
-        'analysis_time': None
+        'analysis_time': None,
+        'filters': {}
     }
 
 
@@ -230,13 +295,15 @@ def get_gap_analysis_for_po_suggestions() -> dict:
             return {
                 'shortage_products': shortage_summary,
                 'period_type': st.session_state.get('period_gap_period_type', 'Weekly'),
-                'analysis_time': st.session_state.get('last_analysis_time')
+                'analysis_time': st.session_state.get('last_analysis_time'),
+                'filters': get_filter_state()  # Include filter configuration
             }
     
     return {
         'shortage_products': None,
         'period_type': 'Weekly',
-        'analysis_time': None
+        'analysis_time': None,
+        'filters': {}
     }
 
 
@@ -261,3 +328,56 @@ def clear_all_gap_data():
     for key in cross_page_keys:
         if key in st.session_state:
             del st.session_state[key]
+
+
+def get_filter_summary() -> str:
+    """
+    Get a text summary of active filters
+    
+    Returns:
+        String description of active filters
+    """
+    filter_state = get_filter_state()
+    summary_parts = []
+    
+    # Check each filter
+    if filter_state['entity']:
+        mode = "excluding" if filter_state['exclude_entity'] else "including"
+        count = len(filter_state['entity'])
+        summary_parts.append(f"{mode} {count} entities")
+    
+    if filter_state['product']:
+        mode = "excluding" if filter_state['exclude_product'] else "including"
+        count = len(filter_state['product'])
+        summary_parts.append(f"{mode} {count} products")
+    
+    if filter_state['brand']:
+        mode = "excluding" if filter_state['exclude_brand'] else "including"
+        count = len(filter_state['brand'])
+        summary_parts.append(f"{mode} {count} brands")
+    
+    if filter_state['customers']:
+        mode = "excluding" if filter_state['exclude_customers'] else "including"
+        count = len(filter_state['customers'])
+        summary_parts.append(f"{mode} {count} customers")
+    
+    if summary_parts:
+        return "Filters: " + ", ".join(summary_parts)
+    else:
+        return "No active filters"
+
+
+def is_filter_active() -> bool:
+    """
+    Check if any filter is active
+    
+    Returns:
+        True if any filter has selections
+    """
+    filter_state = get_filter_state()
+    return any([
+        filter_state['entity'],
+        filter_state['product'],
+        filter_state['brand'],
+        filter_state['customers']
+    ])
