@@ -1,113 +1,92 @@
 # pages/2_📅_Period_GAP_Analysis.py
 """
-Period-based Supply-Demand GAP Analysis
-Analyzes supply-demand gaps by time periods with carry-forward logic
+Period-based Supply-Demand GAP Analysis - Version 3.0
+- Analyzes supply-demand gaps by time periods with carry-forward logic
+- Refactored with main() wrapper pattern similar to Net GAP
+- Fixed period sorting with separate indicator column
 """
 
 import streamlit as st
+import pandas as pd
+from datetime import datetime, timedelta
+import logging
+from typing import Dict, Any, Optional, List, Tuple
 import sys
 from pathlib import Path
+
+# Configure page
+st.set_page_config(
+    page_title="Period GAP Analysis - SCM",
+    page_icon="📅",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Add parent directory to path for imports
 sys.path.append(str(Path(__file__).parent.parent))
 
+# Import authentication
 from utils.auth import AuthManager
 
-# Authentication check
-auth_manager = AuthManager()
-if not auth_manager.check_session():
-    st.switch_page("pages/0_🔒_Login.py")
-    st.stop()
+# Constants
+VERSION = "3.0"
+MAX_EXPORT_ROWS = 50000
+DATA_LOAD_WARNING_SECONDS = 5
+DEFAULT_PERIOD_TYPE = "Weekly"
+DEFAULT_TRACK_BACKLOG = True
 
-import pandas as pd
-from datetime import datetime, timedelta
-import logging
 
-# Import Period GAP modules
-from utils.period_gap.data_loader import PeriodGAPDataLoader
-from utils.period_gap.gap_calculator import calculate_gap_with_carry_forward
-from utils.period_gap.gap_display import (
-    show_gap_summary,
-    show_gap_detail_table,
-    show_gap_pivot_view
-)
-from utils.period_gap.period_helpers import (
-    is_past_period,
-    prepare_gap_detail_display,
-    format_gap_display_df,
-    parse_week_period,
-    parse_month_period
-)
-from utils.period_gap.formatters import (
-    format_number,
-    format_currency,
-    format_percentage,
-    check_missing_dates
-)
-from utils.period_gap.helpers import (
-    convert_df_to_excel,
-    export_multiple_sheets,
-    save_to_session_state,
-    create_period_pivot
-)
-from utils.period_gap.display_components import DisplayComponents
-from utils.period_gap.session_state import (
-    initialize_session_state,
-    save_period_gap_state,
-    get_period_gap_state,
-    clear_period_gap_cache,
-    update_filter_cache,
-    get_filter_cache
-)
+def initialize_components():
+    """Initialize all Period GAP analysis components"""
+    from utils.period_gap.data_loader import PeriodGAPDataLoader
+    from utils.period_gap.display_components import DisplayComponents
+    from utils.period_gap.session_state import initialize_session_state
+    
+    # Initialize session state
+    initialize_session_state()
+    
+    # Initialize components
+    data_loader = PeriodGAPDataLoader()
+    display_components = DisplayComponents()
+    
+    return data_loader, display_components
 
-logger = logging.getLogger(__name__)
 
-# === Page Config ===
-st.set_page_config(
-    page_title="Period GAP Analysis - SCM",
-    page_icon="📅",
-    layout="wide"
-)
+def handle_error(e: Exception) -> None:
+    """Handle errors with appropriate user messages"""
+    error_type = type(e).__name__
+    error_msg = str(e).lower()
+    
+    logger.error(f"Error in Period GAP analysis: {e}", exc_info=True)
+    
+    # Handle specific error types
+    if "connection" in error_msg or "connect" in error_msg:
+        st.error("📌 Database connection issue. Please refresh the page and try again.")
+    elif "permission" in error_msg or "denied" in error_msg:
+        st.error("🔒 Access denied. Please check your permissions.")
+    elif "timeout" in error_msg:
+        st.error("⏱️ Request timed out. Try using more specific filters.")
+    else:
+        st.error(f"❌ An error occurred: {error_type}")
+    
+    with st.expander("Error Details", expanded=False):
+        st.code(str(e))
 
-# === Initialize ===
-initialize_session_state()
 
-# === Debug Mode ===
-col_debug1, col_debug2 = st.columns([6, 1])
-with col_debug2:
-    debug_mode = st.checkbox("🛠 Debug Mode", value=False, key="period_gap_debug")
-
-if debug_mode:
-    st.info("🛠 Debug Mode is ON")
-
-# === Header ===
-DisplayComponents.show_page_header(
-    title="Period-Based GAP Analysis",
-    icon="📅",
-    prev_page="pages/1_📊_Net_GAP.py",
-    next_page=None
-)
-
-st.markdown("---")
-
-# === Initialize Data Loader ===
-@st.cache_resource
-def get_data_loader():
-    return PeriodGAPDataLoader()
-
-data_loader = get_data_loader()
-
-# === Pre-load Data for Filters ===
-@st.cache_data(ttl=300)  # Cache for 5 minutes
-def initialize_filter_data():
+@st.cache_data(ttl=300)
+def initialize_filter_data(_data_loader) -> Dict[str, Any]:
     """Pre-load data to populate filter dropdowns with formatted product options"""
     try:
         # Load data from all sources
-        demand_df = data_loader.get_demand_data(
+        demand_df = _data_loader.get_demand_data(
             sources=["OC", "Forecast"],
             include_converted=False
         )
-        supply_df = data_loader.get_supply_data(
+        supply_df = _data_loader.get_supply_data(
             sources=["Inventory", "Pending CAN", "Pending PO", "Pending WH Transfer"],
             exclude_expired=False
         )
@@ -226,26 +205,9 @@ def initialize_filter_data():
             'supply_df': pd.DataFrame()
         }
 
-# Load filter data on page load
-with st.spinner("Initializing filters..."):
-    filter_data = initialize_filter_data()
-    
-    # Update filter cache for use by filter functions
-    update_filter_cache(
-        entities=filter_data['entities'],
-        products=filter_data['products'],
-        brands=filter_data['brands'],
-        customers=filter_data['customers']
-    )
-    
-    # Store in session state for immediate access
-    st.session_state['pgap_filter_data'] = filter_data
-    st.session_state['pgap_temp_demand'] = filter_data['demand_df']
-    st.session_state['pgap_temp_supply'] = filter_data['supply_df']
 
-# === Source Selection ===
-def select_gap_sources():
-    """Select demand and supply sources for GAP analysis"""
+def render_source_selection(filter_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Render demand and supply source selection"""
     st.markdown("### 📊 Data Source Selection")
     
     col1, col2 = st.columns(2)
@@ -321,18 +283,11 @@ def select_gap_sources():
         "selected_customers": selected_customers
     }
 
-selected_sources = select_gap_sources()
 
-st.markdown("---")
-
-# === Filters ===
-def apply_standard_filters():
-    """Apply standard filters for GAP analysis with formatted product display"""
+def render_filters(filter_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Render standard filters for GAP analysis"""
     with st.expander("🔎 Filters", expanded=True):
         filters = {}
-        
-        # Get pre-loaded filter data
-        filter_data = st.session_state.get('pgap_filter_data', {})
         
         # Row 1: Entity, Product, Brand
         col1, col2, col3 = st.columns(3)
@@ -409,13 +364,9 @@ def apply_standard_filters():
     
     return filters
 
-filters = apply_standard_filters()
 
-st.markdown("---")
-
-# === Calculation Options ===
-def get_calculation_options():
-    """Get calculation options"""
+def render_calculation_options() -> Dict[str, Any]:
+    """Render GAP calculation options"""
     st.markdown("### ⚙️ Calculation Options")
     
     col1, col2, col3 = st.columns(3)
@@ -438,7 +389,7 @@ def get_calculation_options():
     with col3:
         track_backlog = st.checkbox(
             "📊 Track Backlog",
-            value=True,
+            value=DEFAULT_TRACK_BACKLOG,
             key="pgap_track_backlog",
             help="Track negative carry forward (backlog) from shortage periods"
         )
@@ -449,12 +400,13 @@ def get_calculation_options():
         "track_backlog": track_backlog
     }
 
-calc_options = get_calculation_options()
 
-st.markdown("---")
-
-# === Apply Filters Function ===
-def apply_filters_to_data(df_demand, df_supply, filters, selected_customers):
+def apply_filters_to_data(
+    df_demand: pd.DataFrame,
+    df_supply: pd.DataFrame,
+    filters: Dict[str, Any],
+    selected_customers: List[str]
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Apply filters to demand and supply dataframes"""
     
     filtered_demand = df_demand.copy()
@@ -520,58 +472,9 @@ def apply_filters_to_data(df_demand, df_supply, filters, selected_customers):
     
     return filtered_demand, filtered_supply
 
-# === Run Analysis Button ===
-if st.button("🚀 Run Period GAP Analysis", type="primary", use_container_width=True):
-    
-    if not selected_sources["demand"] or not selected_sources["supply"]:
-        st.error("Please select at least one demand source and one supply source.")
-    else:
-        # Load data
-        with st.spinner("Loading demand data..."):
-            df_demand_all = data_loader.get_demand_data(
-                selected_sources["demand"],
-                selected_sources["include_converted"]
-            )
-        
-        with st.spinner("Loading supply data..."):
-            df_supply_all = data_loader.get_supply_data(
-                selected_sources["supply"],
-                selected_sources["exclude_expired"]
-            )
-        
-        # Apply filters
-        df_demand_filtered, df_supply_filtered = apply_filters_to_data(
-            df_demand_all,
-            df_supply_all,
-            filters,
-            selected_sources.get("selected_customers", [])
-        )
-        
-        # Apply date exclusion if requested
-        if calc_options.get("exclude_missing_dates", True):
-            if not df_demand_filtered.empty and 'etd' in df_demand_filtered.columns:
-                df_demand_filtered = df_demand_filtered[df_demand_filtered['etd'].notna()]
-            
-            if not df_supply_filtered.empty and 'date_ref' in df_supply_filtered.columns:
-                df_supply_filtered = df_supply_filtered[df_supply_filtered['date_ref'].notna()]
-        
-        # Save to session for cross-page access
-        save_period_gap_state({
-            'demand': df_demand_filtered,
-            'supply': df_supply_filtered,
-            'calc_options': calc_options,
-            'display_filters': None
-        })
-        
-        # Also save for other pages
-        save_to_session_state('gap_analysis_result', None)  # Will be set after GAP calculation
-        save_to_session_state('demand_filtered', df_demand_filtered)
-        save_to_session_state('supply_filtered', df_supply_filtered)
 
-# === Display Results ===
-if get_period_gap_state():
-    
-    # Get Display Filters
+def render_display_filters(calc_options: Dict[str, Any]) -> Dict[str, Any]:
+    """Render display filters for GAP results"""
     st.markdown("### 🔍 Display Filters")
     st.caption("Filter the calculated results. Changes apply immediately.")
     
@@ -618,7 +521,7 @@ if get_period_gap_state():
             key="pgap_row_highlighting"
         )
     
-    display_filters = {
+    return {
         "show_matched": show_matched,
         "show_demand_only": show_demand_only,
         "show_supply_only": show_supply_only,
@@ -627,138 +530,316 @@ if get_period_gap_state():
         "period_type": calc_options["period_type"],
         "track_backlog": calc_options["track_backlog"]
     }
+
+
+def apply_display_filters(
+    gap_df: pd.DataFrame,
+    display_filters: Dict[str, Any],
+    df_demand_filtered: pd.DataFrame,
+    df_supply_filtered: pd.DataFrame,
+    stored_calc_options: Dict[str, Any]
+) -> pd.DataFrame:
+    """Apply display filters to GAP results and re-sort"""
+    from utils.period_gap.period_helpers import is_past_period, parse_week_period, parse_month_period
+    
+    gap_df_filtered = gap_df.copy()
+    
+    # Filter by product type
+    if not (display_filters['show_matched'] and display_filters['show_demand_only'] and display_filters['show_supply_only']):
+        demand_products = set(df_demand_filtered['pt_code'].unique()) if not df_demand_filtered.empty else set()
+        supply_products = set(df_supply_filtered['pt_code'].unique()) if not df_supply_filtered.empty else set()
+        
+        products_to_show = set()
+        if display_filters['show_matched']:
+            products_to_show.update(demand_products & supply_products)
+        if display_filters['show_demand_only']:
+            products_to_show.update(demand_products - supply_products)
+        if display_filters['show_supply_only']:
+            products_to_show.update(supply_products - demand_products)
+        
+        if products_to_show:
+            gap_df_filtered = gap_df_filtered[gap_df_filtered['pt_code'].isin(products_to_show)]
+    
+    # Filter by period/status
+    period_filter = display_filters['period_filter']
+    period_type = stored_calc_options['period_type']
+    
+    if period_filter == "Shortage Only":
+        gap_df_filtered = gap_df_filtered[gap_df_filtered["gap_quantity"] < 0]
+    elif period_filter == "Past Periods Only":
+        gap_df_filtered = gap_df_filtered[
+            gap_df_filtered['period'].apply(lambda x: is_past_period(str(x), period_type))
+        ]
+    elif period_filter == "Future Periods Only":
+        gap_df_filtered = gap_df_filtered[
+            ~gap_df_filtered['period'].apply(lambda x: is_past_period(str(x), period_type))
+        ]
+    elif period_filter == "Critical Shortage Only":
+        gap_df_filtered = gap_df_filtered[
+            (gap_df_filtered["gap_quantity"] < 0) & 
+            (gap_df_filtered["fulfillment_rate_percent"] < 50)
+        ]
+    
+    # RE-SORT after filtering to ensure proper order
+    if not gap_df_filtered.empty:
+        if period_type == "Weekly":
+            gap_df_filtered['_sort_product'] = gap_df_filtered['pt_code']
+            gap_df_filtered['_sort_period'] = gap_df_filtered['period'].apply(parse_week_period)
+        elif period_type == "Monthly":
+            gap_df_filtered['_sort_product'] = gap_df_filtered['pt_code']
+            gap_df_filtered['_sort_period'] = gap_df_filtered['period'].apply(parse_month_period)
+        else:
+            gap_df_filtered['_sort_product'] = gap_df_filtered['pt_code']
+            gap_df_filtered['_sort_period'] = pd.to_datetime(gap_df_filtered['period'], errors='coerce')
+        
+        gap_df_filtered = gap_df_filtered.sort_values(['_sort_product', '_sort_period'])
+        gap_df_filtered = gap_df_filtered.drop(columns=['_sort_product', '_sort_period'])
+        gap_df_filtered = gap_df_filtered.reset_index(drop=True)
+    
+    return gap_df_filtered
+
+
+def export_to_excel(gap_df: pd.DataFrame, filter_values: Dict[str, Any], include_safety: bool = False) -> bytes:
+    """Export GAP analysis to Excel"""
+    from utils.period_gap.helpers import convert_df_to_excel
+    return convert_df_to_excel(gap_df, "GAP_Analysis")
+
+
+def main():
+    """Main application logic for Period GAP Analysis"""
+    # Initialize authentication
+    auth_manager = AuthManager()
+    
+    # Check authentication
+    if not auth_manager.check_session():
+        st.warning("⚠️ Please login to access this page")
+        st.stop()
+    
+    # Initialize components
+    data_loader, display_components = initialize_components()
+    
+    # Import additional modules
+    from utils.period_gap.gap_calculator import calculate_gap_with_carry_forward
+    from utils.period_gap.gap_display import (
+        show_gap_summary,
+        show_gap_detail_table,
+        show_gap_pivot_view
+    )
+    from utils.period_gap.helpers import (
+        convert_df_to_excel,
+        save_to_session_state
+    )
+    from utils.period_gap.session_state import (
+        save_period_gap_state,
+        get_period_gap_state,
+        update_filter_cache
+    )
+    
+    # Debug Mode
+    col_debug1, col_debug2 = st.columns([6, 1])
+    with col_debug2:
+        debug_mode = st.checkbox("🛠 Debug Mode", value=False, key="period_gap_debug")
+    
+    if debug_mode:
+        st.info("🛠 Debug Mode is ON")
+    
+    # Page Header
+    display_components.show_page_header(
+        title="Period-Based GAP Analysis",
+        icon="📅",
+        prev_page=None,  # Set to None to avoid navigation errors
+        next_page=None
+    )
+    
+    # User info in sidebar
+    st.sidebar.markdown(f"👤 **User:** {auth_manager.get_user_display_name()}")
+    if st.sidebar.button("🚪 Logout", use_container_width=True):
+        auth_manager.logout()
+        st.rerun()
     
     st.markdown("---")
     
-    # Get data from state
-    state = get_period_gap_state()
-    df_demand_filtered = state['demand']
-    df_supply_filtered = state['supply']
-    stored_calc_options = state['calc_options']
-    
-    # Calculate GAP if not cached or options changed
-    cache_key = f"{stored_calc_options['period_type']}_{stored_calc_options['track_backlog']}"
-    
-    if 'pgap_result_cache_key' not in st.session_state or st.session_state['pgap_result_cache_key'] != cache_key:
-        with st.spinner("Calculating supply-demand gaps..."):
-            gap_df = calculate_gap_with_carry_forward(
-                df_demand_filtered,
-                df_supply_filtered,
-                stored_calc_options['period_type'],
-                stored_calc_options['track_backlog']
+    try:
+        # Load filter data
+        with st.spinner("Initializing filters..."):
+            filter_data = initialize_filter_data(data_loader)  # Still pass without underscore when calling
+            
+            # Update filter cache for use by filter functions
+            update_filter_cache(
+                entities=filter_data['entities'],
+                products=filter_data['products'],
+                brands=filter_data['brands'],
+                customers=filter_data['customers']
             )
             
-            st.session_state['pgap_gap_df'] = gap_df
-            st.session_state['pgap_result_cache_key'] = cache_key
-            
-            # Save for other pages
-            save_to_session_state('gap_analysis_result', gap_df)
-            save_to_session_state('last_gap_analysis', gap_df)
-            save_to_session_state('last_analysis_time', datetime.now().strftime('%Y-%m-%d %H:%M'))
-    else:
-        gap_df = st.session_state['pgap_gap_df']
-    
-    if not gap_df.empty:
-        # Apply display filters
-        gap_df_filtered = gap_df.copy()
+            # Store in session state for immediate access
+            st.session_state['pgap_filter_data'] = filter_data
+            st.session_state['pgap_temp_demand'] = filter_data['demand_df']
+            st.session_state['pgap_temp_supply'] = filter_data['supply_df']
         
-        # Filter by product type
-        if not (show_matched and show_demand_only and show_supply_only):
-            demand_products = set(df_demand_filtered['pt_code'].unique()) if not df_demand_filtered.empty else set()
-            supply_products = set(df_supply_filtered['pt_code'].unique()) if not df_supply_filtered.empty else set()
-            
-            products_to_show = set()
-            if show_matched:
-                products_to_show.update(demand_products & supply_products)
-            if show_demand_only:
-                products_to_show.update(demand_products - supply_products)
-            if show_supply_only:
-                products_to_show.update(supply_products - demand_products)
-            
-            if products_to_show:
-                gap_df_filtered = gap_df_filtered[gap_df_filtered['pt_code'].isin(products_to_show)]
+        # Render source selection
+        selected_sources = render_source_selection(filter_data)
         
-        # Filter by period/status
-        if period_filter == "Shortage Only":
-            gap_df_filtered = gap_df_filtered[gap_df_filtered["gap_quantity"] < 0]
-        elif period_filter == "Past Periods Only":
-            gap_df_filtered = gap_df_filtered[
-                gap_df_filtered['period'].apply(lambda x: is_past_period(str(x), stored_calc_options['period_type']))
-            ]
-        elif period_filter == "Future Periods Only":
-            gap_df_filtered = gap_df_filtered[
-                ~gap_df_filtered['period'].apply(lambda x: is_past_period(str(x), stored_calc_options['period_type']))
-            ]
-        elif period_filter == "Critical Shortage Only":
-            gap_df_filtered = gap_df_filtered[
-                (gap_df_filtered["gap_quantity"] < 0) & 
-                (gap_df_filtered["fulfillment_rate_percent"] < 50)
-            ]
+        st.markdown("---")
         
-        # RE-SORT after filtering to ensure proper order
-        if not gap_df_filtered.empty:
-            if stored_calc_options['period_type'] == "Weekly":
-                gap_df_filtered['_sort_product'] = gap_df_filtered['pt_code']
-                gap_df_filtered['_sort_period'] = gap_df_filtered['period'].apply(parse_week_period)
-            elif stored_calc_options['period_type'] == "Monthly":
-                gap_df_filtered['_sort_product'] = gap_df_filtered['pt_code']
-                gap_df_filtered['_sort_period'] = gap_df_filtered['period'].apply(parse_month_period)
+        # Render filters
+        filters = render_filters(filter_data)
+        
+        st.markdown("---")
+        
+        # Render calculation options
+        calc_options = render_calculation_options()
+        
+        st.markdown("---")
+        
+        # Run Analysis Button
+        if st.button("🚀 Run Period GAP Analysis", type="primary", use_container_width=True):
+            
+            if not selected_sources["demand"] or not selected_sources["supply"]:
+                st.error("Please select at least one demand source and one supply source.")
             else:
-                gap_df_filtered['_sort_product'] = gap_df_filtered['pt_code']
-                gap_df_filtered['_sort_period'] = pd.to_datetime(gap_df_filtered['period'], errors='coerce')
-            
-            gap_df_filtered = gap_df_filtered.sort_values(['_sort_product', '_sort_period'])
-            gap_df_filtered = gap_df_filtered.drop(columns=['_sort_product', '_sort_period'])
-            gap_df_filtered = gap_df_filtered.reset_index(drop=True)
-        
-        if gap_df_filtered.empty:
-            st.warning("No products match the selected display filters.")
-        else:
-            # Display results
-            show_gap_summary(
-                gap_df_filtered,
-                display_filters,
-                df_demand_filtered,
-                df_supply_filtered
-            )
-            
-            show_gap_detail_table(
-                gap_df_filtered,
-                display_filters,
-                df_demand_filtered,
-                df_supply_filtered
-            )
-            
-            show_gap_pivot_view(gap_df_filtered, display_filters)
-            
-            # Export section
-            st.markdown("---")
-            st.markdown("### 📤 Export Options")
-            
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                excel_data = convert_df_to_excel(gap_df_filtered, "GAP_Analysis")
-                st.download_button(
-                    "📊 Export GAP Details",
-                    data=excel_data,
-                    file_name=f"period_gap_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-            
-            with col2:
-                if (gap_df_filtered["gap_quantity"] < 0).any():
-                    shortage_df = gap_df_filtered[gap_df_filtered["gap_quantity"] < 0]
-                    shortage_excel = convert_df_to_excel(shortage_df, "Shortage")
-                    st.download_button(
-                        "🚨 Export Shortage Only",
-                        data=shortage_excel,
-                        file_name=f"shortage_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                # Load data
+                with st.spinner("Loading demand data..."):
+                    df_demand_all = data_loader.get_demand_data(
+                        selected_sources["demand"],
+                        selected_sources["include_converted"]
                     )
-    else:
-        st.warning("No data available for the selected filters and sources.")
+                
+                with st.spinner("Loading supply data..."):
+                    df_supply_all = data_loader.get_supply_data(
+                        selected_sources["supply"],
+                        selected_sources["exclude_expired"]
+                    )
+                
+                # Apply filters
+                df_demand_filtered, df_supply_filtered = apply_filters_to_data(
+                    df_demand_all,
+                    df_supply_all,
+                    filters,
+                    selected_sources.get("selected_customers", [])
+                )
+                
+                # Apply date exclusion if requested
+                if calc_options.get("exclude_missing_dates", True):
+                    if not df_demand_filtered.empty and 'etd' in df_demand_filtered.columns:
+                        df_demand_filtered = df_demand_filtered[df_demand_filtered['etd'].notna()]
+                    
+                    if not df_supply_filtered.empty and 'date_ref' in df_supply_filtered.columns:
+                        df_supply_filtered = df_supply_filtered[df_supply_filtered['date_ref'].notna()]
+                
+                # Save to session for cross-page access
+                save_period_gap_state({
+                    'demand': df_demand_filtered,
+                    'supply': df_supply_filtered,
+                    'calc_options': calc_options,
+                    'display_filters': None
+                })
+                
+                # Also save for other pages
+                save_to_session_state('gap_analysis_result', None)  # Will be set after GAP calculation
+                save_to_session_state('demand_filtered', df_demand_filtered)
+                save_to_session_state('supply_filtered', df_supply_filtered)
+        
+        # Display Results if available
+        if get_period_gap_state():
+            # Get display filters
+            display_filters = render_display_filters(calc_options)
+            
+            st.markdown("---")
+            
+            # Get data from state
+            state = get_period_gap_state()
+            df_demand_filtered = state['demand']
+            df_supply_filtered = state['supply']
+            stored_calc_options = state['calc_options']
+            
+            # Calculate GAP if not cached or options changed
+            cache_key = f"{stored_calc_options['period_type']}_{stored_calc_options['track_backlog']}"
+            
+            if 'pgap_result_cache_key' not in st.session_state or st.session_state['pgap_result_cache_key'] != cache_key:
+                with st.spinner("Calculating supply-demand gaps..."):
+                    gap_df = calculate_gap_with_carry_forward(
+                        df_demand_filtered,
+                        df_supply_filtered,
+                        stored_calc_options['period_type'],
+                        stored_calc_options['track_backlog']
+                    )
+                    
+                    st.session_state['pgap_gap_df'] = gap_df
+                    st.session_state['pgap_result_cache_key'] = cache_key
+                    
+                    # Save for other pages
+                    save_to_session_state('gap_analysis_result', gap_df)
+                    save_to_session_state('last_gap_analysis', gap_df)
+                    save_to_session_state('last_analysis_time', datetime.now().strftime('%Y-%m-%d %H:%M'))
+            else:
+                gap_df = st.session_state['pgap_gap_df']
+            
+            if not gap_df.empty:
+                # Apply display filters
+                gap_df_filtered = apply_display_filters(
+                    gap_df, 
+                    display_filters,
+                    df_demand_filtered,
+                    df_supply_filtered,
+                    stored_calc_options
+                )
+                
+                if gap_df_filtered.empty:
+                    st.warning("No products match the selected display filters.")
+                else:
+                    # Display results
+                    show_gap_summary(
+                        gap_df_filtered,
+                        display_filters,
+                        df_demand_filtered,
+                        df_supply_filtered
+                    )
+                    
+                    show_gap_detail_table(
+                        gap_df_filtered,
+                        display_filters,
+                        df_demand_filtered,
+                        df_supply_filtered
+                    )
+                    
+                    show_gap_pivot_view(gap_df_filtered, display_filters)
+                    
+                    # Export section
+                    st.markdown("---")
+                    st.markdown("### 📤 Export Options")
+                    
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        excel_data = export_to_excel(gap_df_filtered, filters, False)
+                        st.download_button(
+                            "📊 Export GAP Details",
+                            data=excel_data,
+                            file_name=f"period_gap_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        )
+                    
+                    with col2:
+                        if (gap_df_filtered["gap_quantity"] < 0).any():
+                            shortage_df = gap_df_filtered[gap_df_filtered["gap_quantity"] < 0]
+                            shortage_excel = export_to_excel(shortage_df, filters, False)
+                            st.download_button(
+                                "🚨 Export Shortage Only",
+                                data=shortage_excel,
+                                file_name=f"shortage_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            )
+            else:
+                st.warning("No data available for the selected filters and sources.")
+    
+    except Exception as e:
+        handle_error(e)
+    
+    # Footer
+    st.markdown("---")
+    st.caption(f"Period GAP Analysis v{VERSION} | Last update: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-# Footer
-st.markdown("---")
-st.caption(f"Analysis completed at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+if __name__ == "__main__":
+    main()
