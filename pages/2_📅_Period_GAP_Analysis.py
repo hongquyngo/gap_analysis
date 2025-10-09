@@ -16,7 +16,7 @@ from utils.auth import AuthManager
 # Authentication check
 auth_manager = AuthManager()
 if not auth_manager.check_session():
-    st.switch_page("pages/0_🔐_Login.py")
+    st.switch_page("pages/0_🔑_Login.py")
     st.stop()
 
 import pandas as pd
@@ -99,7 +99,7 @@ data_loader = get_data_loader()
 # === CRITICAL FIX: Pre-load Data for Filters ===
 @st.cache_data(ttl=300)  # Cache for 5 minutes
 def initialize_filter_data():
-    """Pre-load data to populate filter dropdowns"""
+    """Pre-load data to populate filter dropdowns with formatted product options"""
     try:
         # Load data from all sources
         demand_df = data_loader.get_demand_data(
@@ -113,7 +113,7 @@ def initialize_filter_data():
         
         # Extract unique values
         entities = set()
-        products = {}  # Use dict to store pt_code: product_name mapping
+        products = {}  # Use dict to store pt_code: (name, package, brand) mapping
         brands = set()
         customers = set()
         
@@ -126,11 +126,22 @@ def initialize_filter_data():
             entities.update(demand_df['legal_entity'].dropna().unique())
             brands.update(demand_df['brand'].dropna().unique())
             
-            # Get products with names
-            if 'pt_code' in demand_df.columns and 'product_name' in demand_df.columns:
-                for _, row in demand_df[['pt_code', 'product_name']].drop_duplicates().iterrows():
-                    if pd.notna(row['pt_code']) and str(row['pt_code']) != 'nan':
-                        products[str(row['pt_code'])] = str(row['product_name'])[:50] if pd.notna(row['product_name']) else ''
+            # Get products with complete details
+            if 'pt_code' in demand_df.columns:
+                for _, row in demand_df.drop_duplicates(subset=['pt_code']).iterrows():
+                    pt_code = str(row['pt_code'])
+                    if pd.notna(row['pt_code']) and pt_code != 'nan':
+                        product_name = str(row.get('product_name', ''))[:30] if pd.notna(row.get('product_name')) else ''
+                        package_size = str(row.get('package_size', '')) if pd.notna(row.get('package_size')) else ''
+                        brand = str(row.get('brand', '')) if pd.notna(row.get('brand')) else ''
+                        
+                        # Clean up the values
+                        if package_size == 'nan':
+                            package_size = ''
+                        if brand == 'nan':
+                            brand = ''
+                        
+                        products[pt_code] = (product_name, package_size, brand)
             
             # Get customers
             if 'customer' in demand_df.columns:
@@ -148,12 +159,22 @@ def initialize_filter_data():
             entities.update(supply_df['legal_entity'].dropna().unique())
             brands.update(supply_df['brand'].dropna().unique())
             
-            # Get products with names
-            if 'pt_code' in supply_df.columns and 'product_name' in supply_df.columns:
-                for _, row in supply_df[['pt_code', 'product_name']].drop_duplicates().iterrows():
-                    if pd.notna(row['pt_code']) and str(row['pt_code']) != 'nan':
-                        if str(row['pt_code']) not in products:
-                            products[str(row['pt_code'])] = str(row['product_name'])[:50] if pd.notna(row['product_name']) else ''
+            # Get products with complete details (for supply-only products)
+            if 'pt_code' in supply_df.columns:
+                for _, row in supply_df.drop_duplicates(subset=['pt_code']).iterrows():
+                    pt_code = str(row['pt_code'])
+                    if pd.notna(row['pt_code']) and pt_code != 'nan' and pt_code not in products:
+                        product_name = str(row.get('product_name', ''))[:30] if pd.notna(row.get('product_name')) else ''
+                        package_size = str(row.get('package_size', '')) if pd.notna(row.get('package_size')) else ''
+                        brand = str(row.get('brand', '')) if pd.notna(row.get('brand')) else ''
+                        
+                        # Clean up the values
+                        if package_size == 'nan':
+                            package_size = ''
+                        if brand == 'nan':
+                            brand = ''
+                        
+                        products[pt_code] = (product_name, package_size, brand)
             
             # Update date range from supply
             if 'date_ref' in supply_df.columns:
@@ -162,13 +183,25 @@ def initialize_filter_data():
                     min_date = min(min_date, supply_dates.min().date())
                     max_date = max(max_date, supply_dates.max().date())
         
-        # Create product options list
-        product_options = [f"{pt_code} - {name}" for pt_code, name in sorted(products.items())]
+        # Create formatted product options list
+        product_options = []
+        for pt_code, (name, package, brand) in sorted(products.items()):
+            # Format: PT_CODE | Name | Package (Brand)
+            if package and brand:
+                option = f"{pt_code} | {name} | {package} ({brand})"
+            elif package:
+                option = f"{pt_code} | {name} | {package}"
+            elif brand:
+                option = f"{pt_code} | {name} ({brand})"
+            else:
+                option = f"{pt_code} | {name}" if name else pt_code
+            
+            product_options.append(option)
         
         return {
             'entities': sorted(list(entities)),
             'products': sorted(list(products.keys())),
-            'product_options': product_options,
+            'product_options': sorted(product_options),
             'brands': sorted(list(brands)),
             'customers': sorted(list(customers)),
             'min_date': min_date,
@@ -293,7 +326,7 @@ st.markdown("---")
 
 # === Filters ===
 def apply_standard_filters():
-    """Apply standard filters for GAP analysis with pre-loaded data"""
+    """Apply standard filters for GAP analysis with formatted product display"""
     with st.expander("🔎 Filters", expanded=True):
         filters = {}
         
@@ -313,15 +346,24 @@ def apply_standard_filters():
             )
         
         with col2:
+            # Use the formatted product options
             product_options = filter_data.get('product_options', [])
             selected_products = st.multiselect(
-                "Product (PT Code - Name)",
+                "Product",  # Updated label
                 product_options,
                 key="pgap_product_filter",
                 placeholder="All products" if product_options else "No products available"
             )
-            # Extract PT codes from selections
-            filters['product'] = [p.split(' - ')[0] for p in selected_products]
+            
+            # Extract PT codes from formatted selections
+            filters['product'] = []
+            for selection in selected_products:
+                # Extract PT code (everything before first |)
+                if '|' in selection:
+                    pt_code = selection.split(' | ')[0].strip()
+                else:
+                    pt_code = selection.strip()
+                filters['product'].append(pt_code)
         
         with col3:
             all_brands = filter_data.get('brands', [])

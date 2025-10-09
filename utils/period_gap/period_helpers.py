@@ -61,7 +61,8 @@ def parse_week_period(period_str: str) -> Tuple[int, int]:
         if pd.isna(period_str) or not period_str:
             return (9999, 99)
         
-        period_str = str(period_str).strip()
+        # Remove any indicators first
+        period_str = str(period_str).replace('🔴', '').strip()
         
         # Handle standard format "Week X - YYYY"
         if " - " in period_str:
@@ -95,7 +96,10 @@ def parse_month_period(period_str: str) -> pd.Timestamp:
         if pd.isna(period_str) or not period_str:
             return pd.Timestamp.max
         
-        return pd.to_datetime(f"01 {str(period_str)}", format="%d %b %Y")
+        # Remove any indicators first
+        period_str = str(period_str).replace('🔴', '').strip()
+        
+        return pd.to_datetime(f"01 {period_str}", format="%d %b %Y")
     except Exception as e:
         logger.debug(f"Error parsing month period '{period_str}': {e}")
         return pd.Timestamp.max
@@ -121,13 +125,16 @@ def is_past_period(period_str: str, period_type: str,
         if pd.isna(period_str) or not period_str:
             return False
         
+        # Remove any indicators first
+        period_str = str(period_str).replace('🔴', '').strip()
+        
         if period_type == "Daily":
             period_date = pd.to_datetime(period_str, errors='coerce')
             if pd.notna(period_date):
                 return period_date.date() < reference_date.date()
         
         elif period_type == "Weekly":
-            year, week = parse_week_period(str(period_str))
+            year, week = parse_week_period(period_str)
             if year < 9999:
                 jan4 = datetime(year, 1, 4)
                 week_start = jan4 - timedelta(days=jan4.isoweekday() - 1)
@@ -136,7 +143,7 @@ def is_past_period(period_str: str, period_type: str,
                 return target_week_end.date() < reference_date.date()
         
         elif period_type == "Monthly":
-            period_date = parse_month_period(str(period_str))
+            period_date = parse_month_period(period_str)
             if period_date != pd.Timestamp.max:
                 next_month = period_date + pd.DateOffset(months=1)
                 return next_month.date() <= reference_date.date()
@@ -145,6 +152,86 @@ def is_past_period(period_str: str, period_type: str,
         logger.debug(f"Error checking if period is past: {e}")
     
     return False
+
+
+def format_period_with_dates(period_str: str, period_type: str) -> str:
+    """
+    Format period string with date range
+    E.g., "Week 41 - 2025" -> "Week 41 (Oct 06 - Oct 12, 2025)"
+    
+    Args:
+        period_str: Period string
+        period_type: Type of period
+    
+    Returns:
+        Formatted period string with date range
+    """
+    try:
+        # Clean the period string first
+        clean_period = str(period_str).replace("🔴", "").strip()
+        
+        if period_type == "Weekly" and "Week" in clean_period:
+            # Parse "Week 41 - 2025" format
+            if " - " in clean_period:
+                parts = clean_period.split(" - ")
+                week_part = parts[0].replace("Week ", "").strip()
+                year = int(parts[1].strip())
+                week = int(week_part)
+                
+                # Calculate the date range for this week (ISO week)
+                jan4 = datetime(year, 1, 4)
+                week_start = jan4 - timedelta(days=jan4.isoweekday() - 1)
+                target_week_start = week_start + timedelta(weeks=week - 1)
+                target_week_end = target_week_start + timedelta(days=6)
+                
+                # Format the dates
+                start_str = target_week_start.strftime("%b %d")
+                end_str = target_week_end.strftime("%b %d, %Y")
+                
+                # Check if past period for indicator
+                is_past = is_past_period(clean_period, period_type)
+                indicator = "🔴 " if is_past else ""
+                
+                return f"{indicator}Week {week} ({start_str} - {end_str})"
+        
+        elif period_type == "Monthly":
+            # Format "Jan 2025" -> "Jan 2025 (Jan 01 - Jan 31)"
+            try:
+                date = pd.to_datetime(f"01 {clean_period}", format="%d %b %Y")
+                
+                # Get last day of month
+                next_month = date + pd.DateOffset(months=1)
+                last_day = next_month - pd.DateOffset(days=1)
+                
+                start_str = date.strftime("%b %d")
+                end_str = last_day.strftime("%b %d, %Y")
+                
+                is_past = is_past_period(clean_period, period_type)
+                indicator = "🔴 " if is_past else ""
+                
+                return f"{indicator}{clean_period} ({start_str} - {end_str})"
+            except:
+                pass
+        
+        elif period_type == "Daily":
+            # Format daily period
+            try:
+                date = pd.to_datetime(clean_period, errors='coerce')
+                if pd.notna(date):
+                    formatted_date = date.strftime("%Y-%m-%d (%a)")
+                    is_past = is_past_period(clean_period, period_type)
+                    indicator = "🔴 " if is_past else ""
+                    return f"{indicator}{formatted_date}"
+            except:
+                pass
+            
+    except Exception as e:
+        logger.debug(f"Error formatting period with dates: {e}")
+    
+    # Return original with past indicator if needed
+    is_past = is_past_period(str(period_str).replace("🔴", "").strip(), period_type)
+    indicator = "🔴 " if is_past else ""
+    return f"{indicator}{str(period_str).replace('🔴', '').strip()}"
 
 
 # === DATE COLUMN HELPERS ===
@@ -199,14 +286,19 @@ def prepare_gap_detail_display(
         return display_df
     
     display_df = display_df.copy()
-    
-    # 1. Add Period Status indicator (🔴 for past periods)
     period_type = display_filters.get("period_type", "Weekly")
+    
+    # NOTE: The dataframe should ALREADY be sorted from gap_calculator.py
+    # We do NOT re-sort here as it would mess up the carry-forward logic order
+    # Just reset the index to ensure clean indexing
+    display_df = display_df.reset_index(drop=True)
+    
+    # Format period with dates (this function will add past indicator)
     display_df['period'] = display_df['period'].apply(
-        lambda x: f"🔴{x}" if is_past_period(str(x), period_type) else x
+        lambda x: format_period_with_dates(x, period_type)
     )
     
-    # 2. Add Product Type column if we have demand/supply data
+    # Add Product Type column if we have demand/supply data
     if df_demand_filtered is not None and df_supply_filtered is not None:
         demand_products = set()
         supply_products = set()
@@ -229,7 +321,7 @@ def prepare_gap_detail_display(
             
             display_df['Product Type'] = display_df['pt_code'].apply(get_product_type)
     
-    # 3. Add Backlog Status column if tracking backlog
+    # Add Backlog Status column if tracking backlog
     if 'backlog_to_next' in display_df.columns and display_filters.get('track_backlog', True):
         def get_backlog_status(row):
             try:
@@ -242,18 +334,6 @@ def prepare_gap_detail_display(
                 return "✅ No Backlog"
         
         display_df['Backlog Status'] = display_df.apply(get_backlog_status, axis=1)
-    
-    # 4. Sort data by product and period
-    if period_type == "Weekly":
-        display_df['_sort_key'] = display_df['period'].str.replace(' 🔴', '').apply(parse_week_period)
-    elif period_type == "Monthly":
-        display_df['_sort_key'] = display_df['period'].str.replace(' 🔴', '').apply(parse_month_period)
-    else:
-        display_df['_sort_key'] = pd.to_datetime(display_df['period'].str.replace(' 🔴', ''), errors='coerce')
-    
-    display_df = display_df.sort_values(['pt_code', '_sort_key'])
-    display_df = display_df.drop(columns=['_sort_key'])
-    display_df = display_df.reset_index(drop=True)
     
     return display_df
 
@@ -276,7 +356,7 @@ def format_gap_display_df(df: pd.DataFrame, display_options: dict) -> pd.DataFra
     
     df = df.copy()
     
-    # 1. Format numeric columns
+    # Format numeric columns
     numeric_format_cols = [
         "begin_inventory", 
         "supply_in_period", 
@@ -292,13 +372,13 @@ def format_gap_display_df(df: pd.DataFrame, display_options: dict) -> pd.DataFra
         if col in df.columns:
             df[col] = df[col].apply(lambda x: format_number(x))
     
-    # 2. Format percentage column
+    # Format percentage column
     if "fulfillment_rate_percent" in df.columns:
         df["fulfillment_rate_percent"] = df["fulfillment_rate_percent"].apply(
             lambda x: format_percentage(x)
         )
     
-    # 3. Reorder columns
+    # Reorder columns
     column_order = [
         "pt_code",
         "brand",
@@ -327,7 +407,7 @@ def format_gap_display_df(df: pd.DataFrame, display_options: dict) -> pd.DataFra
     existing_ordered_cols = [col for col in column_order if col in df.columns]
     df = df[existing_ordered_cols]
     
-    # 4. Rename columns for display
+    # Rename columns for display
     rename_map = {
         "pt_code": "PT Code",
         "brand": "Brand",
@@ -350,7 +430,7 @@ def format_gap_display_df(df: pd.DataFrame, display_options: dict) -> pd.DataFra
     rename_map_filtered = {k: v for k, v in rename_map.items() if k in df.columns}
     df = df.rename(columns=rename_map_filtered)
     
-    # 5. Drop backlog columns if not tracking
+    # Drop backlog columns if not tracking
     if not display_options.get('track_backlog', True):
         backlog_display_cols = ['Backlog', 'Total Need', 'Carry Backlog', 'Backlog Status']
         cols_to_drop = [col for col in backlog_display_cols if col in df.columns]
