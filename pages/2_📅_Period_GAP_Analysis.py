@@ -1,9 +1,9 @@
 # pages/2_📅_Period_GAP_Analysis.py
 """
-Period-based Supply-Demand GAP Analysis - Version 3.2
+Period-based Supply-Demand GAP Analysis - Version 3.3
 - Analyzes supply-demand gaps by time periods with carry-forward logic
-- Enhanced with exclude filters for better filtering control
-- Improved Period & Status filters to distinguish Net Shortage vs Timing Gap
+- Enhanced with ETD/ETA selection for OC analysis
+- Default to ETA for OC timing analysis
 """
 
 import streamlit as st
@@ -33,11 +33,12 @@ sys.path.append(str(Path(__file__).parent.parent))
 from utils.auth import AuthManager
 
 # Constants
-VERSION = "3.2"
+VERSION = "3.3"
 MAX_EXPORT_ROWS = 50000
 DATA_LOAD_WARNING_SECONDS = 5
 DEFAULT_PERIOD_TYPE = "Weekly"
 DEFAULT_TRACK_BACKLOG = True
+DEFAULT_OC_DATE_FIELD = "ETA"  # New default: ETA instead of ETD
 
 
 def initialize_components():
@@ -84,7 +85,8 @@ def initialize_filter_data(_data_loader) -> Dict[str, Any]:
         # Load data from all sources
         demand_df = _data_loader.get_demand_data(
             sources=["OC", "Forecast"],
-            include_converted=False
+            include_converted=False,
+            oc_date_field="ETA"  # Default to ETA
         )
         supply_df = _data_loader.get_supply_data(
             sources=["Inventory", "Pending CAN", "Pending PO", "Pending WH Transfer"],
@@ -127,12 +129,18 @@ def initialize_filter_data(_data_loader) -> Dict[str, Any]:
             if 'customer' in demand_df.columns:
                 customers.update(demand_df['customer'].dropna().unique())
             
-            # Update date range from demand
+            # Update date range from demand - now check both etd and eta
             if 'etd' in demand_df.columns:
                 etd_dates = pd.to_datetime(demand_df['etd'], errors='coerce').dropna()
                 if len(etd_dates) > 0:
                     min_date = min(min_date, etd_dates.min().date())
                     max_date = max(max_date, etd_dates.max().date())
+            
+            if 'eta' in demand_df.columns:
+                eta_dates = pd.to_datetime(demand_df['eta'], errors='coerce').dropna()
+                if len(eta_dates) > 0:
+                    min_date = min(min_date, eta_dates.min().date())
+                    max_date = max(max_date, eta_dates.max().date())
         
         # Process supply data
         if not supply_df.empty:
@@ -207,7 +215,7 @@ def initialize_filter_data(_data_loader) -> Dict[str, Any]:
 
 
 def render_source_selection(filter_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Render demand and supply source selection with customer filter"""
+    """Render demand and supply source selection with ETD/ETA option for OC"""
     st.markdown("### 📊 Data Source Selection")
     
     col1, col2 = st.columns(2)
@@ -217,9 +225,11 @@ def render_source_selection(filter_data: Dict[str, Any]) -> Dict[str, Any]:
         
         col1_1, col1_2 = st.columns(2)
         with col1_1:
+            # Default to True for OC
             demand_oc = st.checkbox("OC", value=True, key="pgap_demand_oc")
         with col1_2:
-            demand_forecast = st.checkbox("Forecast", value=True, key="pgap_demand_forecast")
+            # Default to False for Forecast
+            demand_forecast = st.checkbox("Forecast", value=False, key="pgap_demand_forecast")
         
         selected_demand_sources = []
         if demand_oc:
@@ -227,6 +237,21 @@ def render_source_selection(filter_data: Dict[str, Any]) -> Dict[str, Any]:
         if demand_forecast:
             selected_demand_sources.append("Forecast")
         
+        # OC Date Field Selection (ETD vs ETA)
+        oc_date_field = DEFAULT_OC_DATE_FIELD  # Default to ETA
+        if demand_oc:
+            st.markdown("##### OC Timing Analysis")
+            oc_date_field = st.radio(
+                "Analyze OC by:",
+                options=["ETA", "ETD"],
+                index=0,  # Default to ETA (index 0)
+                horizontal=True,
+                key="pgap_oc_date_field",
+                help="ETA: Estimated Time of Arrival | ETD: Estimated Time of Delivery"
+            )
+        
+        # Forecast conversion option
+        include_converted = False
         if demand_forecast:
             include_converted = st.checkbox(
                 "Include Converted Forecasts", 
@@ -234,8 +259,6 @@ def render_source_selection(filter_data: Dict[str, Any]) -> Dict[str, Any]:
                 help="⚠️ May cause double counting if OC is also selected",
                 key="pgap_include_converted"
             )
-        else:
-            include_converted = False
         
         # Customer filter with exclude option
         st.markdown("##### Customer Filter")
@@ -293,7 +316,8 @@ def render_source_selection(filter_data: Dict[str, Any]) -> Dict[str, Any]:
         "include_converted": include_converted,
         "exclude_expired": exclude_expired,
         "selected_customers": selected_customers,
-        "exclude_customers": exclude_customers
+        "exclude_customers": exclude_customers,
+        "oc_date_field": oc_date_field  # New field for ETD/ETA selection
     }
 
 
@@ -459,7 +483,8 @@ def apply_filters_to_data(
     df_supply: pd.DataFrame,
     filters: Dict[str, Any],
     selected_customers: List[str],
-    exclude_customers: bool = False
+    exclude_customers: bool = False,
+    oc_date_field: str = "ETA"  # New parameter
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Apply filters to demand and supply dataframes with exclude logic"""
     
@@ -521,16 +546,17 @@ def apply_filters_to_data(
             # Include only selected customers
             filtered_demand = filtered_demand[filtered_demand['customer'].isin(selected_customers)]
     
-    # Apply date filter for demand
-    if 'etd' in filtered_demand.columns and filters.get('start_date') and filters.get('end_date'):
+    # Apply date filter for demand - use selected date field (ETD or ETA)
+    # The data should have a unified 'demand_date' field set by data loader
+    if 'demand_date' in filtered_demand.columns and filters.get('start_date') and filters.get('end_date'):
         start_date = pd.to_datetime(filters['start_date'])
         end_date = pd.to_datetime(filters['end_date'])
         
-        filtered_demand['etd'] = pd.to_datetime(filtered_demand['etd'], errors='coerce')
+        filtered_demand['demand_date'] = pd.to_datetime(filtered_demand['demand_date'], errors='coerce')
         
         date_mask = (
-            filtered_demand['etd'].isna() |
-            ((filtered_demand['etd'] >= start_date) & (filtered_demand['etd'] <= end_date))
+            filtered_demand['demand_date'].isna() |
+            ((filtered_demand['demand_date'] >= start_date) & (filtered_demand['demand_date'] <= end_date))
         )
         filtered_demand = filtered_demand[date_mask]
     
@@ -598,6 +624,7 @@ def apply_filters_to_data(
         if filters.get('product'):
             mode = "Excluding" if filters.get('exclude_product') else "Including"
             st.info(f"Products: {mode} {len(filters['product'])} items")
+        st.info(f"OC Analysis by: {oc_date_field}")
     
     return filtered_demand, filtered_supply
 
@@ -830,11 +857,12 @@ def main():
             if not selected_sources["demand"] or not selected_sources["supply"]:
                 st.error("Please select at least one demand source and one supply source.")
             else:
-                # Load data
+                # Load data with OC date field selection
                 with st.spinner("Loading demand data..."):
                     df_demand_all = data_loader.get_demand_data(
                         selected_sources["demand"],
-                        selected_sources["include_converted"]
+                        selected_sources["include_converted"],
+                        oc_date_field=selected_sources.get("oc_date_field", "ETA")  # Pass the selected field
                     )
                 
                 with st.spinner("Loading supply data..."):
@@ -843,19 +871,20 @@ def main():
                         selected_sources["exclude_expired"]
                     )
                 
-                # Apply filters with exclude logic
+                # Apply filters with exclude logic and OC date field
                 df_demand_filtered, df_supply_filtered = apply_filters_to_data(
                     df_demand_all,
                     df_supply_all,
                     filters,
                     selected_sources.get("selected_customers", []),
-                    selected_sources.get("exclude_customers", False)
+                    selected_sources.get("exclude_customers", False),
+                    selected_sources.get("oc_date_field", "ETA")
                 )
                 
-                # Apply date exclusion if requested
+                # Apply date exclusion if requested - now use demand_date for demand
                 if calc_options.get("exclude_missing_dates", True):
-                    if not df_demand_filtered.empty and 'etd' in df_demand_filtered.columns:
-                        df_demand_filtered = df_demand_filtered[df_demand_filtered['etd'].notna()]
+                    if not df_demand_filtered.empty and 'demand_date' in df_demand_filtered.columns:
+                        df_demand_filtered = df_demand_filtered[df_demand_filtered['demand_date'].notna()]
                     
                     if not df_supply_filtered.empty and 'date_ref' in df_supply_filtered.columns:
                         df_supply_filtered = df_supply_filtered[df_supply_filtered['date_ref'].notna()]
@@ -865,7 +894,8 @@ def main():
                     'demand': df_demand_filtered,
                     'supply': df_supply_filtered,
                     'calc_options': calc_options,
-                    'display_filters': None
+                    'display_filters': None,
+                    'oc_date_field': selected_sources.get("oc_date_field", "ETA")  # Save the selection
                 })
                 
                 # Also save for other pages
@@ -885,6 +915,11 @@ def main():
             df_demand_filtered = state['demand']
             df_supply_filtered = state['supply']
             stored_calc_options = state['calc_options']
+            stored_oc_date_field = state.get('oc_date_field', 'ETA')
+            
+            # Display which date field is being used
+            if 'OC' in selected_sources.get("demand", []):
+                st.info(f"📊 OC Analysis using: **{stored_oc_date_field}** (Estimated Time of {'Arrival' if stored_oc_date_field == 'ETA' else 'Delivery'})")
             
             # Create cache key that includes filters to detect changes
             import hashlib
@@ -894,6 +929,7 @@ def main():
             cache_params = {
                 'period_type': stored_calc_options['period_type'],
                 'track_backlog': stored_calc_options['track_backlog'],
+                'oc_date_field': stored_oc_date_field,  # Include in cache key
                 'demand_count': len(df_demand_filtered),
                 'supply_count': len(df_supply_filtered),
                 # Add a hash of the actual data to detect filter changes

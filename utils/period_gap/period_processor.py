@@ -2,6 +2,7 @@
 """
 Period-based GAP Processor
 Processes demand and supply data by period for GAP calculation
+Version 2.0 - Support unified demand_date field for ETD/ETA selection
 """
 
 import pandas as pd
@@ -27,7 +28,7 @@ class PeriodBasedGAPProcessor:
         # Step 1: Add period column to all dataframes
         demand_with_period = self._add_period_column(
             demand_df, 
-            date_col='etd',
+            date_col='demand_date',  # Changed from 'etd' to unified field
             df_type='demand'
         )
         
@@ -83,8 +84,24 @@ class PeriodBasedGAPProcessor:
                     lambda x: convert_to_period(x, self.period_type)
                 )
             else:
-                logger.warning(f"Date column {date_col} not found in {df_type} dataframe")
-                df['period'] = None
+                # Fallback for backward compatibility
+                if df_type == 'demand':
+                    # Try different possible date columns
+                    if 'demand_date' in df.columns:
+                        df['period'] = df['demand_date'].apply(
+                            lambda x: convert_to_period(x, self.period_type)
+                        )
+                    elif 'etd' in df.columns:
+                        logger.warning("Using 'etd' as fallback for demand date column")
+                        df['period'] = df['etd'].apply(
+                            lambda x: convert_to_period(x, self.period_type)
+                        )
+                    else:
+                        logger.warning(f"No suitable date column found in {df_type} dataframe")
+                        df['period'] = None
+                else:
+                    logger.warning(f"Date column {date_col} not found in {df_type} dataframe")
+                    df['period'] = None
         
         # Remove invalid periods
         df = df[df['period'].notna() & (df['period'] != 'nan')]

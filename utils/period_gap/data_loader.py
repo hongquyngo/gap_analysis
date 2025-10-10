@@ -2,6 +2,7 @@
 """
 Simplified Data Loader for Period GAP Analysis
 With numeric safety and proper data handling
+Version 2.0 - Added ETA/ETD selection support for OC
 """
 
 import streamlit as st
@@ -138,13 +139,42 @@ class PeriodGAPDataLoader:
 
     # === STANDARDIZATION METHODS ===
     
-    def _standardize_demand_df(self, df: pd.DataFrame, is_forecast: bool) -> pd.DataFrame:
-        """Standardize demand dataframe with numeric safety"""
+    def _standardize_demand_df(self, df: pd.DataFrame, is_forecast: bool, 
+                              oc_date_field: str = "ETA") -> pd.DataFrame:
+        """
+        Standardize demand dataframe with numeric safety
+        
+        Args:
+            df: Demand dataframe
+            is_forecast: Whether this is forecast data
+            oc_date_field: Which date field to use for OC ("ETA" or "ETD")
+        """
         df = df.copy()
         
-        # Date columns - keep original only
-        if 'etd' in df.columns:
-            df["etd"] = pd.to_datetime(df["etd"], errors="coerce")
+        # Date columns handling - UNIFIED approach
+        if is_forecast:
+            # For Forecast, use ETD
+            if 'etd' in df.columns:
+                df["demand_date"] = pd.to_datetime(df["etd"], errors="coerce")
+            # Keep original fields too
+            if 'etd' in df.columns:
+                df["etd"] = pd.to_datetime(df["etd"], errors="coerce")
+        else:
+            # For OC, use selected field (ETA or ETD)
+            if oc_date_field == "ETA" and 'eta' in df.columns:
+                df["demand_date"] = pd.to_datetime(df["eta"], errors="coerce")
+            elif oc_date_field == "ETD" and 'etd' in df.columns:
+                df["demand_date"] = pd.to_datetime(df["etd"], errors="coerce")
+            else:
+                # Fallback to ETD if selected field not available
+                if 'etd' in df.columns:
+                    df["demand_date"] = pd.to_datetime(df["etd"], errors="coerce")
+            
+            # Keep both original fields for reference
+            if 'etd' in df.columns:
+                df["etd"] = pd.to_datetime(df["etd"], errors="coerce")
+            if 'eta' in df.columns:
+                df["eta"] = pd.to_datetime(df["eta"], errors="coerce")
         
         if 'oc_date' in df.columns:
             df["oc_date"] = pd.to_datetime(df["oc_date"], errors="coerce")
@@ -393,15 +423,23 @@ class PeriodGAPDataLoader:
 
     # === PUBLIC METHODS ===
     
-    def get_demand_data(self, sources: List[str], include_converted: bool = False) -> pd.DataFrame:
-        """Get combined demand data with numeric safety"""
+    def get_demand_data(self, sources: List[str], include_converted: bool = False,
+                       oc_date_field: str = "ETA") -> pd.DataFrame:
+        """
+        Get combined demand data with numeric safety
+        
+        Args:
+            sources: List of demand sources
+            include_converted: Whether to include converted forecasts
+            oc_date_field: Which date field to use for OC ("ETA" or "ETD")
+        """
         df_parts = []
         
         if "OC" in sources:
             df_oc = self.load_demand_oc()
             if not df_oc.empty:
                 df_oc["source_type"] = "OC"
-                df_oc = self._standardize_demand_df(df_oc, is_forecast=False)
+                df_oc = self._standardize_demand_df(df_oc, is_forecast=False, oc_date_field=oc_date_field)
                 df_parts.append(df_oc)
         
         if "Forecast" in sources:
@@ -425,7 +463,7 @@ class PeriodGAPDataLoader:
             numeric_cols = ['demand_quantity', 'value_in_usd']
             combined = self._ensure_numeric_columns(combined, numeric_cols)
             
-            logger.info(f"Combined {len(combined)} demand records from {len(sources)} sources")
+            logger.info(f"Combined {len(combined)} demand records from {len(sources)} sources using {oc_date_field} for OC")
             return combined
         
         return pd.DataFrame()
