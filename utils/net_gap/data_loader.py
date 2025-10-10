@@ -1,11 +1,11 @@
 # utils/net_gap/data_loader.py
 
 """
-Data loader module for GAP Analysis System - Version 2.2 FIXED
-- Added data normalization to prevent JOIN issues
-- Improved consistency checks
+Data loader module for GAP Analysis System - Version 2.3 UPDATED
+- Added package_size field to all queries
+- Improved data normalization and validation
 - Better handling of text fields
-- Enhanced validation
+- Enhanced error recovery
 """
 
 import pandas as pd
@@ -85,6 +85,7 @@ class GAPDataLoader:
     @contextmanager
     def get_connection(self):
         """Context manager for database connections with error handling"""
+        conn = None
         try:
             conn = self.engine.connect()
             yield conn
@@ -92,10 +93,11 @@ class GAPDataLoader:
             logger.error(f"Database connection error: {e}", exc_info=True)
             raise DatabaseConnectionError(f"Database connection failed: {str(e)}")
         finally:
-            try:
-                conn.close()
-            except:
-                pass
+            if conn:
+                try:
+                    conn.close()
+                except:
+                    pass
     
     def _normalize_text_field(self, value: Any, field_name: str = '') -> str:
         """
@@ -293,6 +295,7 @@ class GAPDataLoader:
                     product_id,
                     product_name,
                     pt_code,
+                    package_size,
                     brand,
                     standard_uom,
                     entity_id,
@@ -359,7 +362,7 @@ class GAPDataLoader:
             return df
         
         # Normalize text fields
-        text_cols = ['product_name', 'pt_code', 'brand', 'standard_uom', 
+        text_cols = ['product_name', 'pt_code', 'package_size', 'brand', 'standard_uom', 
                      'entity_name', 'customer_name']
         for col in text_cols:
             if col in df.columns:
@@ -550,8 +553,8 @@ class GAPDataLoader:
                 product_id,
                 product_name,
                 pt_code,
-                brand,
                 package_size,
+                brand,
                 standard_uom,
                 batch_number,
                 expiry_date,
@@ -625,8 +628,8 @@ class GAPDataLoader:
                 product_id,
                 product_name,
                 pt_code,
-                brand,
                 package_size,
+                brand,
                 standard_uom,
                 customer,
                 customer_code,
@@ -695,7 +698,7 @@ class GAPDataLoader:
             return df
         
         # Normalize text fields FIRST
-        text_cols = ['product_name', 'pt_code', 'brand', 'standard_uom', 
+        text_cols = ['product_name', 'pt_code', 'package_size', 'brand', 'standard_uom', 
                      'warehouse_name', 'entity_name', 'supplier_name']
         for col in text_cols:
             if col in df.columns:
@@ -721,6 +724,7 @@ class GAPDataLoader:
             sample = df.iloc[0]
             logger.debug(f"Supply sample - product_id: {sample.get('product_id')}, "
                         f"pt_code: '{sample.get('pt_code')}', "
+                        f"package_size: '{sample.get('package_size')}', "
                         f"brand: '{sample.get('brand')}'")
         
         return df
@@ -731,7 +735,7 @@ class GAPDataLoader:
             return df
         
         # Normalize text fields FIRST
-        text_cols = ['product_name', 'pt_code', 'brand', 'standard_uom', 
+        text_cols = ['product_name', 'pt_code', 'package_size', 'brand', 'standard_uom', 
                      'customer', 'customer_code', 'entity_name']
         for col in text_cols:
             if col in df.columns:
@@ -768,6 +772,7 @@ class GAPDataLoader:
             sample = df.iloc[0]
             logger.debug(f"Demand sample - product_id: {sample.get('product_id')}, "
                         f"pt_code: '{sample.get('pt_code')}', "
+                        f"package_size: '{sample.get('package_size')}', "
                         f"brand: '{sample.get('brand')}'")
         
         return df
@@ -791,7 +796,7 @@ class GAPDataLoader:
             
             with _self.get_connection() as conn:
                 result = conn.execute(text(query))
-                entities = [row[0] for row in result]
+                entities = [row[0] for row in result if row[0]]
             
             logger.info(f"Loaded {len(entities)} entities")
             return entities
@@ -802,7 +807,7 @@ class GAPDataLoader:
     
     @st.cache_data(ttl=CACHE_TTL_REFERENCE)
     def get_products(_self, entity_name: Optional[str] = None) -> pd.DataFrame:
-        """Get list of products with basic info (normalized)"""
+        """Get list of products with basic info including package_size"""
         try:
             _self._validate_entity_name(entity_name)
             
@@ -818,15 +823,16 @@ class GAPDataLoader:
                     product_id,
                     product_name,
                     pt_code,
+                    package_size,
                     brand,
                     standard_uom
                 FROM (
-                    SELECT product_id, product_name, pt_code, brand, 
+                    SELECT product_id, product_name, pt_code, package_size, brand, 
                            standard_uom, entity_name
                     FROM unified_supply_view
                     WHERE product_id IS NOT NULL
                     UNION
-                    SELECT product_id, product_name, pt_code, brand,
+                    SELECT product_id, product_name, pt_code, package_size, brand,
                            standard_uom, entity_name
                     FROM unified_demand_view
                     WHERE product_id IS NOT NULL
@@ -839,12 +845,12 @@ class GAPDataLoader:
                 df = pd.read_sql(text(query), conn, params=params)
             
             # Normalize text fields
-            text_cols = ['product_name', 'pt_code', 'brand', 'standard_uom']
+            text_cols = ['product_name', 'pt_code', 'package_size', 'brand', 'standard_uom']
             for col in text_cols:
                 if col in df.columns:
                     df[col] = df[col].apply(lambda x: _self._normalize_text_field(x, col))
             
-            logger.info(f"Loaded {len(df)} products")
+            logger.info(f"Loaded {len(df)} products with package_size")
             return df
             
         except ValidationError:
