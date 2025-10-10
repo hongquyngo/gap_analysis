@@ -1,11 +1,11 @@
 # utils/net_gap/calculator.py
 
 """
-Calculator module for GAP Analysis System - Version 2.1 FIXED
-- Fixed OUTER JOIN issue causing duplicate rows
-- Join only on key columns (product_id or brand)
-- Improved data normalization
+Calculator module for GAP Analysis System - Version 2.2 FIXED
+- Fixed numeric type handling to prevent dtype errors
+- Improved data normalization and validation
 - Better handling of safety stock calculations
+- Enhanced error recovery
 """
 
 import pandas as pd
@@ -56,6 +56,59 @@ class GAPCalculator:
         self._safety_stock_df = None  # Store safety stock data
         self._include_safety = False  # Track if safety stock is included
     
+    def _ensure_numeric_columns(self, df: pd.DataFrame, columns: List[str]) -> pd.DataFrame:
+        """
+        Ensure specified columns are numeric type
+        
+        Args:
+            df: DataFrame to process
+            columns: List of column names to convert
+            
+        Returns:
+            DataFrame with numeric columns
+        """
+        for col in columns:
+            if col in df.columns:
+                original_dtype = df[col].dtype
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+                
+                if original_dtype != df[col].dtype:
+                    logger.debug(f"Converted column '{col}' from {original_dtype} to {df[col].dtype}")
+        
+        return df
+    
+    def _validate_dataframe_dtypes(self, df: pd.DataFrame, context: str = "") -> pd.DataFrame:
+        """
+        Validate and fix DataFrame dtypes
+        
+        Args:
+            df: DataFrame to validate
+            context: Context for logging
+            
+        Returns:
+            DataFrame with corrected dtypes
+        """
+        # Define expected numeric columns
+        numeric_columns = [
+            'total_supply', 'total_demand', 'net_gap', 'available_supply',
+            'safety_stock_qty', 'reorder_point', 'avg_daily_demand',
+            'coverage_ratio', 'gap_percentage', 'at_risk_value_usd',
+            'gap_value_usd', 'supply_value_usd', 'demand_value_usd',
+            'avg_unit_cost_usd', 'avg_selling_price_usd',
+            'supply_inventory', 'supply_can_pending', 'supply_warehouse_transfer',
+            'supply_purchase_order', 'demand_oc_pending', 'demand_forecast',
+            'expired_qty', 'near_expiry_qty', 'safety_coverage', 'days_of_supply'
+        ]
+        
+        # Convert numeric columns
+        df = self._ensure_numeric_columns(df, numeric_columns)
+        
+        # Log validation results
+        logger.debug(f"DataFrame dtypes after validation ({context}): "
+                    f"{df.select_dtypes(include=[np.number]).columns.tolist()}")
+        
+        return df
+    
     def calculate_net_gap(
         self,
         supply_df: pd.DataFrame,
@@ -68,7 +121,7 @@ class GAPCalculator:
     ) -> pd.DataFrame:
         """
         Calculate net GAP with optional safety stock consideration
-        FIXED: Join logic to prevent duplicate rows and proper data persistence
+        FIXED: Ensure all numeric columns have proper dtypes
         
         Args:
             supply_df: Supply data from unified_supply_view
@@ -117,7 +170,6 @@ class GAPCalculator:
                 st.session_state['gap_calculation_timestamp'] = datetime.now()
                 
                 logger.info(f"Stored {len(self._filtered_demand_df)} filtered demand records in session state")
-                logger.info(f"Session state keys: {list(st.session_state.keys())}")
             except Exception as e:
                 logger.warning(f"Could not store in session state: {e}")
             
@@ -129,19 +181,26 @@ class GAPCalculator:
             supply_agg = self._aggregate_supply(supply_df, group_cols)
             demand_agg = self._aggregate_demand(demand_df, group_cols)
             
-            # FIXED: Smart merge using only key columns
+            # Validate numeric columns in aggregated data
+            supply_agg = self._validate_dataframe_dtypes(supply_agg, "supply_agg")
+            demand_agg = self._validate_dataframe_dtypes(demand_agg, "demand_agg")
+            
+            # Smart merge using only key columns
             gap_df = self._smart_merge(supply_agg, demand_agg, join_keys, group_cols)
             
             # Merge safety stock if included
             if self._include_safety:
                 gap_df = self._merge_safety_stock(gap_df, safety_stock_df, join_keys)
             
-            # Fill NaN values
-            numeric_cols = gap_df.select_dtypes(include=[np.number]).columns
+            # Fill NaN values and ensure numeric types
+            numeric_cols = gap_df.select_dtypes(include=[np.number]).columns.tolist()
             gap_df[numeric_cols] = gap_df[numeric_cols].fillna(0)
             
             # Calculate GAP metrics
             gap_df = self._calculate_gap_metrics(gap_df)
+            
+            # Final validation of all numeric columns
+            gap_df = self._validate_dataframe_dtypes(gap_df, "final_gap_df")
             
             # Sort by priority
             gap_df = gap_df.sort_values(
@@ -162,12 +221,15 @@ class GAPCalculator:
             
             logger.info(f"Calculated GAP for {len(gap_df)} {group_by} groups "
                     f"(safety stock: {'included' if self._include_safety else 'excluded'})")
+            
+            # Log dtypes for debugging
+            logger.debug(f"Final GAP DataFrame dtypes: {gap_df.dtypes.to_dict()}")
+            
             return gap_df
             
         except Exception as e:
             logger.error(f"Error calculating net GAP: {e}", exc_info=True)
             raise
-
 
     def _normalize_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -277,6 +339,10 @@ class GAPCalculator:
                 (supply_df['expiry_date'] > today)
             ].copy()
         
+        # Ensure numeric columns before aggregation
+        supply_df = self._ensure_numeric_columns(supply_df, 
+            ['available_quantity', 'total_value_usd', 'unit_cost_usd'])
+        
         # Create aggregation dictionary
         agg_dict = {
             'available_quantity': 'sum',
@@ -300,6 +366,7 @@ class GAPCalculator:
         
         # Track expired and near-expiry quantities
         if 'days_to_expiry' in supply_df.columns:
+            supply_df = self._ensure_numeric_columns(supply_df, ['days_to_expiry'])
             supply_df.loc[:, 'expired_qty'] = np.where(
                 supply_df['days_to_expiry'] <= 0,
                 supply_df['available_quantity'],
@@ -331,6 +398,11 @@ class GAPCalculator:
             )
             supply_agg.drop(columns=['cost_x_qty'], inplace=True)
         
+        # Ensure all numeric columns are properly typed
+        numeric_cols = ['total_supply', 'supply_value_usd', 'avg_unit_cost_usd'] + \
+                      [f'supply_{s.lower()}' for s in self.supply_sources]
+        supply_agg = self._ensure_numeric_columns(supply_agg, numeric_cols)
+        
         return supply_agg
     
     def _aggregate_demand(self, demand_df: pd.DataFrame, group_cols: List[str]) -> pd.DataFrame:
@@ -339,6 +411,11 @@ class GAPCalculator:
             return pd.DataFrame(columns=group_cols + ['total_demand'])
         
         demand_df = demand_df.copy()
+        
+        # Ensure numeric columns before aggregation
+        demand_df = self._ensure_numeric_columns(demand_df,
+            ['required_quantity', 'total_value_usd', 'allocated_quantity', 
+             'unallocated_quantity', 'over_committed_qty_standard', 'days_to_required'])
         
         # Create aggregation dictionary
         agg_dict = {
@@ -394,6 +471,12 @@ class GAPCalculator:
             0
         )
         
+        # Ensure all numeric columns are properly typed
+        numeric_cols = ['total_demand', 'demand_value_usd', 'customer_count', 
+                       'avg_selling_price_usd'] + \
+                      [f'demand_{s.lower()}' for s in self.demand_sources]
+        demand_agg = self._ensure_numeric_columns(demand_agg, numeric_cols)
+        
         return demand_agg
     
     def _merge_safety_stock(
@@ -412,6 +495,10 @@ class GAPCalculator:
         # Select relevant columns from safety stock
         safety_cols = ['product_id', 'safety_stock_qty', 'reorder_point', 'avg_daily_demand']
         safety_data = safety_stock_df[safety_cols].copy()
+        
+        # Ensure numeric types
+        safety_data = self._ensure_numeric_columns(safety_data, 
+            ['safety_stock_qty', 'reorder_point', 'avg_daily_demand'])
         
         # Merge based on product_id
         if 'product_id' in join_keys:
@@ -436,6 +523,11 @@ class GAPCalculator:
     
     def _calculate_gap_metrics(self, gap_df: pd.DataFrame) -> pd.DataFrame:
         """Calculate GAP metrics with safety stock awareness"""
+        # Ensure all necessary columns are numeric
+        numeric_cols = ['total_supply', 'total_demand', 'safety_stock_qty', 
+                       'reorder_point', 'avg_daily_demand']
+        gap_df = self._ensure_numeric_columns(gap_df, numeric_cols)
+        
         # Determine effective available supply
         if self._include_safety:
             # When safety stock is included, adjust available supply
@@ -447,8 +539,9 @@ class GAPCalculator:
             # Traditional calculation
             gap_df['available_supply'] = gap_df['total_supply']
         
-        # Basic GAP calculation (using available supply)
+        # Basic GAP calculation (using available supply) - ENSURE NUMERIC
         gap_df['net_gap'] = gap_df['available_supply'] - gap_df['total_demand']
+        gap_df = self._ensure_numeric_columns(gap_df, ['net_gap'])
         
         # Coverage ratio (using available supply)
         gap_df['coverage_ratio'] = np.where(
@@ -511,10 +604,12 @@ class GAPCalculator:
         
         # Value calculations
         if 'avg_unit_cost_usd' in gap_df.columns:
+            gap_df = self._ensure_numeric_columns(gap_df, ['avg_unit_cost_usd'])
             gap_df['gap_value_usd'] = gap_df['net_gap'] * gap_df['avg_unit_cost_usd']
         
         # At-risk value calculation
         if 'demand_value_usd' in gap_df.columns:
+            gap_df = self._ensure_numeric_columns(gap_df, ['demand_value_usd'])
             gap_df['shortage_ratio'] = np.where(
                 (gap_df['net_gap'] < 0) & (gap_df['total_demand'] > 0),
                 abs(gap_df['net_gap']) / gap_df['total_demand'],
@@ -523,6 +618,7 @@ class GAPCalculator:
             gap_df['at_risk_value_usd'] = gap_df['shortage_ratio'] * gap_df['demand_value_usd']
             gap_df.drop(columns=['shortage_ratio'], inplace=True)
         elif 'avg_selling_price_usd' in gap_df.columns:
+            gap_df = self._ensure_numeric_columns(gap_df, ['avg_selling_price_usd'])
             gap_df['at_risk_value_usd'] = np.where(
                 gap_df['net_gap'] < 0,
                 abs(gap_df['net_gap']) * gap_df['avg_selling_price_usd'],
@@ -530,6 +626,13 @@ class GAPCalculator:
             )
         else:
             gap_df['at_risk_value_usd'] = 0
+        
+        # Final validation of all numeric columns
+        final_numeric_cols = [
+            'net_gap', 'coverage_ratio', 'gap_percentage', 'priority',
+            'gap_value_usd', 'at_risk_value_usd'
+        ]
+        gap_df = self._ensure_numeric_columns(gap_df, final_numeric_cols)
         
         return gap_df
     
@@ -706,8 +809,7 @@ class GAPCalculator:
             # Log for debugging
             logger.info(f"Calculating affected customers from {len(affected_demand)} filtered demand records")
             
-            # IMPORTANT: Use simple unique count without deduplication for consistency
-            # The deduplication should happen at data loading level, not here
+            # Use simple unique count
             if 'customer' in affected_demand.columns:
                 unique_customers = affected_demand['customer'].nunique()
                 logger.info(f"Found {unique_customers} unique affected customers")
@@ -731,6 +833,9 @@ class GAPCalculator:
     
     def get_summary_metrics(self, gap_df: pd.DataFrame) -> Dict[str, any]:
         """Calculate summary metrics from GAP analysis"""
+        # Ensure gap_df has proper numeric types
+        gap_df = self._validate_dataframe_dtypes(gap_df, "summary_metrics")
+        
         # Define status groups
         if self._include_safety:
             shortage_statuses = ['SEVERE_SHORTAGE', 'HIGH_SHORTAGE', 'MODERATE_SHORTAGE', 

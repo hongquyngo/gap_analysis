@@ -1,11 +1,10 @@
 # utils/net_gap/filters.py
 
 """
-Filter components module for GAP Analysis System - Version 2.1 (Refactored)
-- Integrated with SessionStateManager for centralized state management
-- Converts lists to tuples for stable cache keys
+Filter components module for GAP Analysis System - Version 2.2 FIXED
+- Fixed product display format to include package size and brand
+- Format: pt_code | name | package size (Brand)
 - Improved validation and error handling
-- Moved quick filter to post-calculation (table display)
 """
 
 import streamlit as st
@@ -322,8 +321,44 @@ class GAPFilters:
         
         return None if selected == "All Entities" else selected
     
+    def _format_product_display(self, row: pd.Series) -> str:
+        """
+        Format product display according to requested format
+        Format: pt_code | name | package size (Brand)
+        
+        Args:
+            row: DataFrame row with product information
+            
+        Returns:
+            Formatted display string
+        """
+        pt_code = str(row.get('pt_code', 'N/A'))
+        product_name = str(row.get('product_name', 'Unknown Product'))
+        package_size = row.get('package_size', '')
+        brand = str(row.get('brand', 'No Brand'))
+        
+        # Truncate long product names
+        if len(product_name) > 30:
+            product_name = product_name[:30] + "..."
+        
+        # Build display string
+        display_parts = [pt_code, product_name]
+        
+        # Add package size if available
+        if package_size and str(package_size).strip() and str(package_size) != 'nan':
+            display_parts.append(str(package_size))
+        
+        # Join with pipe separator and add brand in parentheses
+        display_text = " | ".join(display_parts)
+        display_text += f" ({brand})"
+        
+        return display_text
+    
     def _render_product_multiselect(self, entity: Optional[str]) -> List[int]:
-        """Render product selection as multiselect with error handling"""
+        """
+        Render product selection as multiselect with error handling
+        FIXED: Product display format as pt_code | name | package size (Brand)
+        """
         try:
             products_df = self.data_loader.get_products(entity)
         except (DataLoadError, ValidationError) as e:
@@ -334,11 +369,8 @@ class GAPFilters:
             st.info("No products available")
             return []
         
-        # Create display names
-        products_df['display_name'] = products_df.apply(
-            lambda x: f"{x['pt_code']} - {x['product_name'][:30]}...",
-            axis=1
-        )
+        # Create display names with requested format
+        products_df['display_name'] = products_df.apply(self._format_product_display, axis=1)
         
         current_filters = self.session_manager.get_filters()
         selected_products = current_filters.get('products', [])
@@ -346,15 +378,17 @@ class GAPFilters:
         # Ensure selected products exist in current product list
         valid_selected = [p for p in selected_products if p in products_df['product_id'].tolist()]
         
+        # Create a mapping for format_func to handle efficiently
+        product_display_map = dict(zip(products_df['product_id'], products_df['display_name']))
+        
         selected = st.multiselect(
             "Select products",
             options=products_df['product_id'].tolist(),
             default=valid_selected,
-            format_func=lambda x: products_df[products_df['product_id'] == x]['display_name'].iloc[0]
-                if x in products_df['product_id'].values else str(x),
+            format_func=lambda x: product_display_map.get(x, f"Product ID: {x}"),
             placeholder="All products",
             label_visibility="collapsed",
-            help="Leave empty for all products",
+            help="Leave empty for all products. Format: PT Code | Name | Package Size (Brand)",
             key="products_multiselect"
         )
         

@@ -1,9 +1,9 @@
 # utils/net_gap/charts.py
 
 """
-Visualization module for GAP Analysis System - Version 2.0
-- Removed unnecessary heatmap
-- Enhanced KPI cards with safety stock metrics
+Visualization module for GAP Analysis System - Version 2.1 FIXED
+- Fixed dtype issues with abs_gap column
+- Enhanced numeric validation
 - Context-aware visualizations
 """
 
@@ -13,6 +13,9 @@ import plotly.graph_objects as go
 import plotly.express as px
 import streamlit as st
 from typing import Dict, List, Optional, Any
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Chart configuration constants
 CHART_HEIGHT_DEFAULT = 400
@@ -87,6 +90,21 @@ class GAPCharts:
         """
         self.formatter = formatter
         self._include_safety = False
+    
+    def _ensure_numeric_column(self, df: pd.DataFrame, column: str) -> pd.DataFrame:
+        """
+        Ensure a column is numeric type
+        
+        Args:
+            df: DataFrame
+            column: Column name to convert
+            
+        Returns:
+            DataFrame with numeric column
+        """
+        if column in df.columns:
+            df[column] = pd.to_numeric(df[column], errors='coerce').fillna(0)
+        return df
     
     def create_kpi_cards(self, metrics: Dict[str, Any], include_safety: bool = False,
                         enable_customer_dialog: bool = True) -> None:
@@ -334,6 +352,7 @@ class GAPCharts:
     def create_top_shortage_bar_chart(self, gap_df: pd.DataFrame, top_n: int = 10) -> go.Figure:
         """
         Create bar chart showing top shortage items
+        FIXED: Ensure proper numeric type handling for abs_gap
         
         Args:
             gap_df: DataFrame with GAP calculations (should be filtered for shortages)
@@ -347,14 +366,39 @@ class GAPCharts:
         
         # Get top shortage items
         shortage_df = gap_df.copy()
-        shortage_df['abs_gap'] = abs(shortage_df['net_gap'])
-        top_items = shortage_df.nlargest(min(top_n, len(shortage_df)), 'abs_gap')
+        
+        # FIX: Ensure net_gap is numeric before calculating abs_gap
+        shortage_df = self._ensure_numeric_column(shortage_df, 'net_gap')
+        
+        # Create abs_gap column with proper numeric type
+        shortage_df['abs_gap'] = shortage_df['net_gap'].abs()
+        
+        # Double-check abs_gap is numeric
+        if shortage_df['abs_gap'].dtype == 'object':
+            logger.warning("abs_gap still object dtype after conversion, forcing to numeric")
+            shortage_df['abs_gap'] = pd.to_numeric(shortage_df['abs_gap'], errors='coerce').fillna(0)
+        
+        # Log dtype for debugging
+        logger.debug(f"abs_gap dtype: {shortage_df['abs_gap'].dtype}")
+        
+        # Now safely use nlargest
+        try:
+            top_items = shortage_df.nlargest(min(top_n, len(shortage_df)), 'abs_gap')
+        except Exception as e:
+            logger.error(f"Error in nlargest operation: {e}")
+            # Fallback: sort manually
+            shortage_df = shortage_df.sort_values('abs_gap', ascending=False)
+            top_items = shortage_df.head(min(top_n, len(shortage_df)))
         
         # Prepare display names
         display_names = self._prepare_display_names(top_items)
         
         # Get colors based on status
         colors = [STATUS_COLORS.get(status, '#888888') for status in top_items['gap_status']]
+        
+        # Ensure numeric columns for hover data
+        top_items = self._ensure_numeric_column(top_items, 'gap_percentage')
+        top_items = self._ensure_numeric_column(top_items, 'total_demand')
         
         # Create bar chart
         fig = go.Figure(data=[
@@ -427,8 +471,17 @@ class GAPCharts:
         
         # Get items with largest absolute gaps
         gap_df_sorted = gap_df.copy()
-        gap_df_sorted['abs_gap'] = abs(gap_df_sorted['net_gap'])
-        top_items = gap_df_sorted.nlargest(min(top_n, len(gap_df_sorted)), 'abs_gap')
+        
+        # Ensure net_gap is numeric before calculating abs_gap
+        gap_df_sorted = self._ensure_numeric_column(gap_df_sorted, 'net_gap')
+        gap_df_sorted['abs_gap'] = gap_df_sorted['net_gap'].abs()
+        
+        try:
+            top_items = gap_df_sorted.nlargest(min(top_n, len(gap_df_sorted)), 'abs_gap')
+        except Exception as e:
+            logger.error(f"Error in nlargest operation: {e}")
+            gap_df_sorted = gap_df_sorted.sort_values('abs_gap', ascending=False)
+            top_items = gap_df_sorted.head(min(top_n, len(gap_df_sorted)))
         
         # Prepare display names (shorter for x-axis)
         display_names = self._prepare_short_names(top_items)
@@ -438,13 +491,18 @@ class GAPCharts:
         
         # Determine what to show as supply
         if self._include_safety and 'available_supply' in top_items.columns:
+            top_items = self._ensure_numeric_column(top_items, 'available_supply')
             supply_values = top_items['available_supply']
             supply_label = 'Available Supply'
             supply_hover = 'Available (after safety): %{y:,.0f}'
         else:
+            top_items = self._ensure_numeric_column(top_items, 'total_supply')
             supply_values = top_items['total_supply']
             supply_label = 'Total Supply'
             supply_hover = 'Supply: %{y:,.0f}'
+        
+        # Ensure demand is numeric
+        top_items = self._ensure_numeric_column(top_items, 'total_demand')
         
         # Add supply bars
         fig.add_trace(go.Bar(
@@ -470,6 +528,7 @@ class GAPCharts:
         
         # Add safety stock line if included
         if self._include_safety and 'safety_stock_qty' in top_items.columns:
+            top_items = self._ensure_numeric_column(top_items, 'safety_stock_qty')
             fig.add_trace(go.Scatter(
                 name='Safety Stock',
                 x=display_names,
@@ -527,6 +586,9 @@ class GAPCharts:
         """
         if gap_df.empty:
             return self._create_empty_chart("No data for coverage distribution")
+        
+        # Ensure coverage_ratio is numeric
+        gap_df = self._ensure_numeric_column(gap_df.copy(), 'coverage_ratio')
         
         # Filter out extreme values for better visualization
         coverage_data = gap_df[gap_df['coverage_ratio'] < 10]['coverage_ratio'] * 100
