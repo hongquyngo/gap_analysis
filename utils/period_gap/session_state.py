@@ -1,7 +1,7 @@
 # utils/period_gap/session_state.py
 """
 Complete Session State Management for Period GAP Analysis
-Version 2.0 - Added support for exclude filter states
+Version 2.1 - Removed customer filter support
 """
 
 import streamlit as st
@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 from datetime import datetime
 
 def initialize_session_state():
-    """Initialize all required session state variables for Period GAP with exclude filters"""
+    """Initialize all required session state variables for Period GAP"""
     
     # Core session state defaults
     defaults = {
@@ -29,11 +29,10 @@ def initialize_session_state():
         'last_gap_analysis': None,
         'last_analysis_time': None,
         
-        # Filter cache
+        # Filter cache (removed customers)
         'period_gap_filter_entities': [],
         'period_gap_filter_products': [],
         'period_gap_filter_brands': [],
-        'period_gap_filter_customers': [],
         
         # Filter data initialization
         'pgap_filter_data': None,
@@ -56,15 +55,13 @@ def initialize_session_state():
         'pgap_gap_df': None,
         'pgap_result_cache_key': None,
         
-        # === NEW: Exclude filter states ===
+        # Exclude filter states
         'pgap_exclude_entity': False,
         'pgap_exclude_product': False,
         'pgap_exclude_brand': False,
-        'pgap_exclude_customers': False,
         'pgap_selected_entities_excluded': [],
         'pgap_selected_products_excluded': [],
-        'pgap_selected_brands_excluded': [],
-        'pgap_selected_customers_excluded': []
+        'pgap_selected_brands_excluded': []
     }
     
     for key, default_value in defaults.items():
@@ -117,10 +114,6 @@ def save_filter_state(filter_config: Dict[str, Any]):
         st.session_state['pgap_selected_brands'] = filter_config['brand']
         st.session_state['pgap_exclude_brand'] = filter_config.get('exclude_brand', False)
     
-    if 'customers' in filter_config:
-        st.session_state['pgap_selected_customers'] = filter_config['customers']
-        st.session_state['pgap_exclude_customers'] = filter_config.get('exclude_customers', False)
-    
     # Save date range
     if 'start_date' in filter_config:
         st.session_state['pgap_start_date'] = filter_config['start_date']
@@ -142,8 +135,6 @@ def get_filter_state() -> Dict[str, Any]:
         'exclude_product': get_session_value('pgap_exclude_product', False),
         'brand': get_session_value('pgap_selected_brands', []),
         'exclude_brand': get_session_value('pgap_exclude_brand', False),
-        'customers': get_session_value('pgap_selected_customers', []),
-        'exclude_customers': get_session_value('pgap_exclude_customers', False),
         'start_date': get_session_value('pgap_start_date'),
         'end_date': get_session_value('pgap_end_date')
     }
@@ -200,20 +191,18 @@ def get_period_gap_state() -> dict:
     return {}
 
 
-def update_filter_cache(entities: list, products: list, brands: list, customers: list):
+def update_filter_cache(entities: list, products: list, brands: list):
     """
-    Update filter options cache for dropdowns
+    Update filter options cache for dropdowns (removed customers parameter)
     
     Args:
         entities: List of entities
         products: List of products
         brands: List of brands
-        customers: List of customers
     """
     st.session_state['period_gap_filter_entities'] = entities or []
     st.session_state['period_gap_filter_products'] = products or []
     st.session_state['period_gap_filter_brands'] = brands or []
-    st.session_state['period_gap_filter_customers'] = customers or []
 
 
 def get_filter_cache() -> dict:
@@ -226,8 +215,7 @@ def get_filter_cache() -> dict:
     return {
         'entities': st.session_state.get('period_gap_filter_entities', []),
         'products': st.session_state.get('period_gap_filter_products', []),
-        'brands': st.session_state.get('period_gap_filter_brands', []),
-        'customers': st.session_state.get('period_gap_filter_customers', [])
+        'brands': st.session_state.get('period_gap_filter_brands', [])
     }
 
 
@@ -356,11 +344,6 @@ def get_filter_summary() -> str:
         count = len(filter_state['brand'])
         summary_parts.append(f"{mode} {count} brands")
     
-    if filter_state['customers']:
-        mode = "excluding" if filter_state['exclude_customers'] else "including"
-        count = len(filter_state['customers'])
-        summary_parts.append(f"{mode} {count} customers")
-    
     if summary_parts:
         return "Filters: " + ", ".join(summary_parts)
     else:
@@ -378,6 +361,5 @@ def is_filter_active() -> bool:
     return any([
         filter_state['entity'],
         filter_state['product'],
-        filter_state['brand'],
-        filter_state['customers']
+        filter_state['brand']
     ])

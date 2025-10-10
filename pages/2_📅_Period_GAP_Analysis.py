@@ -97,7 +97,6 @@ def initialize_filter_data(_data_loader) -> Dict[str, Any]:
         entities = set()
         products = {}  # Use dict to store pt_code: (name, package, brand) mapping
         brands = set()
-        customers = set()
         
         # Calculate date range
         min_date = datetime.today().date()
@@ -124,10 +123,6 @@ def initialize_filter_data(_data_loader) -> Dict[str, Any]:
                             brand = ''
                         
                         products[pt_code] = (product_name, package_size, brand)
-            
-            # Get customers
-            if 'customer' in demand_df.columns:
-                customers.update(demand_df['customer'].dropna().unique())
             
             # Update date range from demand - now check both etd and eta
             if 'etd' in demand_df.columns:
@@ -191,7 +186,6 @@ def initialize_filter_data(_data_loader) -> Dict[str, Any]:
             'products': sorted(list(products.keys())),
             'product_options': sorted(product_options),
             'brands': sorted(list(brands)),
-            'customers': sorted(list(customers)),
             'min_date': min_date,
             'max_date': max_date,
             'demand_df': demand_df,
@@ -206,7 +200,6 @@ def initialize_filter_data(_data_loader) -> Dict[str, Any]:
             'products': [],
             'product_options': [],
             'brands': [],
-            'customers': [],
             'min_date': today,
             'max_date': today,
             'demand_df': pd.DataFrame(),
@@ -259,29 +252,6 @@ def render_source_selection(filter_data: Dict[str, Any]) -> Dict[str, Any]:
                 help="⚠️ May cause double counting if OC is also selected",
                 key="pgap_include_converted"
             )
-        
-        # Customer filter with exclude option
-        st.markdown("##### Customer Filter")
-        
-        # Create columns for customer filter and exclude checkbox
-        cust_col1, cust_col2 = st.columns([4, 1])
-        
-        with cust_col1:
-            all_customers = filter_data.get('customers', [])
-            selected_customers = st.multiselect(
-                "Select Customers", 
-                options=all_customers,
-                key="pgap_customer",
-                placeholder="All customers" if all_customers else "No customers available"
-            )
-        
-        with cust_col2:
-            exclude_customers = st.checkbox(
-                "🚫",
-                value=False,
-                key="pgap_exclude_customers",
-                help="Exclude selected customers instead of including them"
-            )
     
     with col2:
         st.markdown("#### 📥 Supply Sources")
@@ -315,8 +285,6 @@ def render_source_selection(filter_data: Dict[str, Any]) -> Dict[str, Any]:
         "supply": selected_supply_sources,
         "include_converted": include_converted,
         "exclude_expired": exclude_expired,
-        "selected_customers": selected_customers,
-        "exclude_customers": exclude_customers,
         "oc_date_field": oc_date_field  # New field for ETD/ETA selection
     }
 
@@ -482,8 +450,6 @@ def apply_filters_to_data(
     df_demand: pd.DataFrame,
     df_supply: pd.DataFrame,
     filters: Dict[str, Any],
-    selected_customers: List[str],
-    exclude_customers: bool = False,
     oc_date_field: str = "ETA"  # New parameter
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Apply filters to demand and supply dataframes with exclude logic"""
@@ -536,15 +502,6 @@ def apply_filters_to_data(
         
         # Remove temporary column
         filtered_demand = filtered_demand.drop(columns=['_brand_clean'])
-    
-    # Customer filter with exclude logic
-    if selected_customers and 'customer' in filtered_demand.columns:
-        if exclude_customers:
-            # Exclude selected customers
-            filtered_demand = filtered_demand[~filtered_demand['customer'].isin(selected_customers)]
-        else:
-            # Include only selected customers
-            filtered_demand = filtered_demand[filtered_demand['customer'].isin(selected_customers)]
     
     # Apply date filter for demand - use selected date field (ETD or ETA)
     # The data should have a unified 'demand_date' field set by data loader
@@ -833,8 +790,7 @@ def main():
             update_filter_cache(
                 entities=filter_data['entities'],
                 products=filter_data['products'],
-                brands=filter_data['brands'],
-                customers=filter_data['customers']
+                brands=filter_data['brands']
             )
             
             # Store in session state for immediate access
@@ -876,8 +832,6 @@ def main():
                     df_demand_all,
                     df_supply_all,
                     filters,
-                    selected_sources.get("selected_customers", []),
-                    selected_sources.get("exclude_customers", False),
                     selected_sources.get("oc_date_field", "ETA")
                 )
                 
