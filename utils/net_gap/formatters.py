@@ -1,17 +1,18 @@
-# utils/gap/formatters.py
+# utils/net_gap/formatters.py
 
 """
-Formatting module for GAP Analysis System - Minimal Version
-Contains only actively used formatting functions
+Formatting Module - Version 3.0 ENHANCED
+- Added export formatting (fix 999 values)
+- Support for multiple format modes
+- Clean handling of special cases
 """
 
 import pandas as pd
-from typing import Union, Optional
+from typing import Union, Optional, Any
 
-# Formatting configuration
+# Configuration
 DEFAULT_DECIMAL_PLACES = 0
 
-# Currency symbols
 CURRENCY_SYMBOLS = {
     'USD': '$',
     'VND': '₫',
@@ -19,16 +20,15 @@ CURRENCY_SYMBOLS = {
     'GBP': '£'
 }
 
-# Number abbreviations for large numbers
 NUMBER_ABBREVIATIONS = [
-    (1e9, 'B'),  # Billion
-    (1e6, 'M'),  # Million
-    (1e3, 'K'),  # Thousand
+    (1e9, 'B'),
+    (1e6, 'M'),
+    (1e3, 'K'),
 ]
 
 
 class GAPFormatter:
-    """Handles formatting for GAP analysis display"""
+    """Handles formatting for GAP analysis display and export"""
     
     @staticmethod
     def format_number(
@@ -38,26 +38,21 @@ class GAPFormatter:
         abbreviate: bool = False
     ) -> str:
         """
-        Format number with thousand separators and optional features
+        Format number with thousand separators
         
         Args:
             value: Number to format
-            decimals: Number of decimal places
-            show_sign: Whether to show + sign for positive numbers
-            abbreviate: Whether to abbreviate large numbers (1.5M instead of 1,500,000)
+            decimals: Decimal places
+            show_sign: Show + for positive
+            abbreviate: Use K/M/B notation
             
         Returns:
             Formatted string
-        
-        Used by:
-            - charts.py: create_kpi_cards(), create_top_shortage_bar_chart(), 
-                        create_supply_demand_comparison()
-            - main page: prepare_display_dataframe()
         """
         if pd.isna(value) or value is None:
             return "N/A"
         
-        # Handle abbreviation for large numbers
+        # Abbreviation for large numbers
         if abbreviate and abs(value) >= 1000:
             for threshold, suffix in NUMBER_ABBREVIATIONS:
                 if abs(value) >= threshold:
@@ -91,27 +86,24 @@ class GAPFormatter:
         
         Args:
             value: Amount to format
-            currency: Currency code (USD, VND, EUR, etc.)
-            decimals: Decimal places (None = auto based on currency)
-            abbreviate: Whether to abbreviate large amounts
+            currency: Currency code
+            decimals: Decimal places (auto if None)
+            abbreviate: Use K/M/B notation
             
         Returns:
             Formatted currency string
-            
-        Used by:
-            - charts.py: create_kpi_cards() for "At Risk Value" metric
         """
         if pd.isna(value) or value is None:
             return "N/A"
         
-        # Determine decimal places based on currency
+        # Determine decimals
         if decimals is None:
             decimals = 0 if currency == 'VND' else 2
         
         # Get currency symbol
         symbol = CURRENCY_SYMBOLS.get(currency, '')
         
-        # Format the number part
+        # Abbreviation
         if abbreviate and abs(value) >= 1000:
             for threshold, suffix in NUMBER_ABBREVIATIONS:
                 if abs(value) >= threshold:
@@ -129,3 +121,155 @@ class GAPFormatter:
                 return f"{symbol}{value:,.{decimals}f}"
         else:
             return f"{value:,.{decimals}f} {currency}"
+    
+    @staticmethod
+    def format_percentage(
+        value: Union[float, int, None],
+        decimals: int = 1,
+        show_sign: bool = False
+    ) -> str:
+        """
+        Format value as percentage
+        
+        Args:
+            value: Value to format (0-100 scale)
+            decimals: Decimal places
+            show_sign: Show + for positive
+            
+        Returns:
+            Formatted percentage string
+        """
+        if pd.isna(value) or value is None:
+            return "N/A"
+        
+        if decimals == 0:
+            formatted = f"{int(value)}%"
+        else:
+            formatted = f"{value:.{decimals}f}%"
+        
+        if show_sign and value > 0:
+            formatted = f"+{formatted}"
+        
+        return formatted
+    
+    @staticmethod
+    def format_for_export(
+        value: Any, 
+        field_type: str,
+        max_value_threshold: float = 999
+    ) -> Any:
+        """
+        Format value for Excel export
+        CRITICAL: Handles special values like 999
+        
+        Args:
+            value: Value to format
+            field_type: Type of field ('coverage', 'days', 'ratio', 'number', 'currency')
+            max_value_threshold: Values >= this become None
+            
+        Returns:
+            Excel-friendly value (None for blanks)
+        """
+        if pd.isna(value) or value is None:
+            return None
+        
+        # Handle special cases based on field type
+        if field_type == 'coverage':
+            # Safety coverage, coverage ratio, etc.
+            if value >= max_value_threshold:
+                return None  # Excel will show as blank
+            return round(value, 2)
+        
+        elif field_type == 'days':
+            # Days of supply, days to expiry, etc.
+            if value >= max_value_threshold:
+                return None  # Excel will show as blank
+            return round(value, 1)
+        
+        elif field_type == 'ratio':
+            # Ratios that can be excessive
+            if value > 10:  # >1000% is excessive
+                return None
+            return round(value, 2)
+        
+        elif field_type == 'percentage':
+            # Regular percentages
+            if value >= max_value_threshold:
+                return None
+            return round(value, 1)
+        
+        elif field_type == 'number':
+            # Regular numbers
+            if isinstance(value, float):
+                return round(value, 2)
+            return value
+        
+        elif field_type == 'currency':
+            # Currency values
+            return round(value, 2) if isinstance(value, float) else value
+        
+        else:
+            # Default: return as-is for numeric, None for extreme values
+            if isinstance(value, (int, float)):
+                if abs(value) >= max_value_threshold:
+                    return None
+                return round(value, 2) if isinstance(value, float) else value
+            return value
+    
+    @staticmethod
+    def format_for_display(
+        value: Any,
+        field_name: str,
+        formatter_instance = None
+    ) -> str:
+        """
+        Format value for UI display
+        
+        Args:
+            value: Value to format
+            field_name: Name of the field
+            formatter_instance: GAPFormatter instance (for recursive calls)
+            
+        Returns:
+            Formatted display string
+        """
+        if pd.isna(value) or value is None:
+            return "—"
+        
+        if formatter_instance is None:
+            formatter_instance = GAPFormatter()
+        
+        # Map field names to format types
+        if field_name in ['safety_coverage', 'safety_cov']:
+            if value >= 999:
+                return "N/A"
+            return f"{value:.1f}x"
+        
+        elif field_name in ['days_of_supply', 'days_to_expiry']:
+            if value >= 999:
+                return ">1 year"
+            if value >= 365:
+                return f"{value/365:.1f} years"
+            return f"{value:.0f} days"
+        
+        elif field_name in ['coverage_ratio', 'coverage']:
+            if value > 10:
+                return "Excess"
+            return f"{value*100:.0f}%"
+        
+        elif field_name in ['gap_percentage', 'gap_%']:
+            return formatter_instance.format_percentage(value, show_sign=True)
+        
+        elif 'value' in field_name.lower() or 'amount' in field_name.lower():
+            return formatter_instance.format_currency(value, abbreviate=True)
+        
+        elif 'quantity' in field_name.lower() or 'qty' in field_name.lower():
+            return formatter_instance.format_number(value)
+        
+        else:
+            # Default formatting
+            if isinstance(value, float):
+                return f"{value:.2f}"
+            elif isinstance(value, int):
+                return formatter_instance.format_number(value)
+            return str(value)

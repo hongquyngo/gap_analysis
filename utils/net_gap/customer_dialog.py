@@ -1,17 +1,17 @@
 # utils/net_gap/customer_dialog.py
 
 """
-Customer Affected Dialog for GAP Analysis System - Version 2.3
-- Fixed customer data persistence and count mismatch
-- Added comprehensive tooltips and calculation explanations
-- Fixed nested expander issue using tabs
-- Improved session state handling
+Customer Affected Dialog - Version 3.0 SIMPLIFIED
+- Gets data from GAPCalculationResult (no fallbacks)
+- Pre-calculated data (no computation in dialog)
+- Removed emergency database reload
+- Clean error handling
 """
 
 import streamlit as st
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any
 import logging
 from datetime import datetime
 import io
@@ -27,266 +27,19 @@ MAX_PRODUCTS_PER_CUSTOMER = 20
 
 
 class CustomerAffectedDialog:
-    """Manages customer affected dialog display with consistent data handling"""
+    """Manages customer affected dialog with pre-calculated data"""
     
     def __init__(self, calculator, formatter):
         """
-        Initialize dialog with calculator and formatter
+        Initialize dialog
         
         Args:
-            calculator: GAPCalculator instance
+            calculator: GAPCalculator instance (for compatibility)
             formatter: GAPFormatter instance
         """
         self.calculator = calculator
         self.formatter = formatter
         self.session_manager = get_session_manager()
-    
-    def show_dialog(self, gap_df: pd.DataFrame, demand_df: Optional[pd.DataFrame] = None) -> None:
-        """
-        Open the customer affected dialog
-        
-        Args:
-            gap_df: GAP analysis results
-            demand_df: Original demand data (optional - will use calculator's filtered data)
-        """
-        # Extract only shortage product IDs
-        shortage_df = gap_df[gap_df['net_gap'] < 0].copy()
-        
-        if shortage_df.empty:
-            st.warning("No shortage items found")
-            return
-        
-        if 'product_id' not in shortage_df.columns:
-            st.error("Product-level grouping required for customer affected analysis")
-            return
-        
-        shortage_product_ids = shortage_df['product_id'].tolist()
-        
-        # Pre-calculate summary metrics
-        metrics = {
-            'total_shortage_value': shortage_df['at_risk_value_usd'].sum(),
-            'shortage_count': len(shortage_product_ids),
-            'total_demand': shortage_df['total_demand'].sum(),
-            'total_shortage_qty': shortage_df[shortage_df['net_gap'] < 0]['net_gap'].abs().sum()
-        }
-        
-        # Open dialog with minimal data
-        self.session_manager.open_customer_dialog(shortage_product_ids, metrics)
-        
-        logger.info(f"Customer dialog opened with {len(shortage_product_ids)} shortage products")
-    
-    def calculate_customer_affected(
-        self, 
-        shortage_product_ids: List[int],
-        demand_df: Optional[pd.DataFrame] = None,
-        gap_df: Optional[pd.DataFrame] = None,
-        calculator = None
-    ) -> pd.DataFrame:
-        """
-        Calculate customers affected using consistent logic with main calculation
-        FIXED: Use session state as primary data source
-        
-        Args:
-            shortage_product_ids: List of product IDs with shortages
-            demand_df: Optional demand data (will prefer session state)
-            gap_df: GAP analysis results (for shortage details)
-            calculator: Calculator instance (fallback)
-            
-        Returns:
-            DataFrame with customer affected analysis
-        """
-        try:
-            import streamlit as st
-            
-            # PRIORITY 1: Check session state for filtered demand
-            if 'gap_filtered_demand' in st.session_state and st.session_state['gap_filtered_demand'] is not None:
-                demand_df = st.session_state['gap_filtered_demand'].copy()
-                logger.info(f"Retrieved {len(demand_df)} records from session state 'gap_filtered_demand'")
-            
-            # PRIORITY 2: Try calculator's filtered data
-            elif calculator and hasattr(calculator, 'get_filtered_demand_df'):
-                filtered = calculator.get_filtered_demand_df()
-                if filtered is not None and not filtered.empty:
-                    demand_df = filtered
-                    logger.info(f"Retrieved {len(demand_df)} records from calculator")
-            
-            # PRIORITY 3: Use passed demand_df
-            elif demand_df is not None and not demand_df.empty:
-                logger.info(f"Using passed demand_df with {len(demand_df)} records")
-            
-            # EMERGENCY FALLBACK: Reload from database
-            else:
-                logger.warning("No demand data available from any source, attempting database reload")
-                try:
-                    from utils.net_gap.data_loader import GAPDataLoader
-                    loader = GAPDataLoader()
-                    # Get filters from session if available
-                    filters = st.session_state.get('last_gap_filters', {})
-                    demand_df = loader.load_demand_data(
-                        entity_name=filters.get('entity'),
-                        date_from=filters.get('date_range', [None])[0],
-                        date_to=filters.get('date_range', [None, None])[1],
-                        product_ids=tuple(shortage_product_ids) if shortage_product_ids else None
-                    )
-                    logger.info(f"Emergency reload successful: {len(demand_df)} records")
-                except Exception as e:
-                    logger.error(f"Emergency reload failed: {e}")
-                    return pd.DataFrame()
-            
-            if demand_df is None or demand_df.empty:
-                logger.error("No demand data available after all attempts")
-                return pd.DataFrame()
-            
-            # Log data stats for debugging
-            logger.info(f"Demand data stats: {len(demand_df)} total records, "
-                       f"{demand_df['product_id'].nunique()} unique products, "
-                       f"{demand_df['customer'].nunique()} unique customers")
-            
-            # Build shortage lookup dictionary
-            if gap_df is not None and not gap_df.empty:
-                shortage_df = gap_df[gap_df['product_id'].isin(shortage_product_ids)].copy()
-                
-                # Handle potential duplicates
-                if shortage_df['product_id'].duplicated().any():
-                    logger.warning(f"Found {shortage_df['product_id'].duplicated().sum()} duplicate product IDs, keeping first")
-                    shortage_df = shortage_df.drop_duplicates(subset=['product_id'], keep='first')
-                
-                shortage_lookup = shortage_df.set_index('product_id').to_dict('index')
-            else:
-                # Use session state shortage data if available
-                if 'gap_shortage_df' in st.session_state:
-                    shortage_df = st.session_state['gap_shortage_df']
-                    shortage_lookup = shortage_df.set_index('product_id').to_dict('index')
-                else:
-                    shortage_lookup = {pid: {'net_gap': -1, 'total_demand': 1} for pid in shortage_product_ids}
-            
-            # Filter demand for shortage products
-            affected_demand = demand_df[
-                demand_df['product_id'].isin(shortage_product_ids)
-            ].copy()
-            
-            if affected_demand.empty:
-                logger.warning(f"No demand found for {len(shortage_product_ids)} shortage products")
-                logger.debug(f"Shortage product IDs (first 10): {shortage_product_ids[:10]}")
-                logger.debug(f"Available product IDs in demand (first 10): {demand_df['product_id'].unique()[:10].tolist()}")
-                return pd.DataFrame()
-            
-            logger.info(f"Found {len(affected_demand)} demand records for shortage products")
-            
-            # Apply deduplication for consistency
-            dedup_cols = ['customer', 'product_id']
-            if 'demand_source' in affected_demand.columns:
-                dedup_cols.append('demand_source')
-            
-            affected_demand_dedup = affected_demand.drop_duplicates(subset=dedup_cols).copy()
-            logger.info(f"After deduplication: {len(affected_demand)} -> {len(affected_demand_dedup)} records")
-            
-            # Calculate metrics
-            affected_demand_dedup['product_net_gap'] = affected_demand_dedup['product_id'].map(
-                lambda x: shortage_lookup.get(x, {}).get('net_gap', 0)
-            )
-            affected_demand_dedup['product_total_demand'] = affected_demand_dedup['product_id'].map(
-                lambda x: shortage_lookup.get(x, {}).get('total_demand', 1)
-            )
-            affected_demand_dedup['product_at_risk_value'] = affected_demand_dedup['product_id'].map(
-                lambda x: shortage_lookup.get(x, {}).get('at_risk_value_usd', 0)
-            )
-            affected_demand_dedup['product_coverage'] = affected_demand_dedup['product_id'].map(
-                lambda x: shortage_lookup.get(x, {}).get('coverage_ratio', 0)
-            )
-            
-            # Calculate customer's share of shortage
-            affected_demand_dedup['demand_share'] = np.where(
-                affected_demand_dedup['product_total_demand'] > 0,
-                affected_demand_dedup['required_quantity'] / affected_demand_dedup['product_total_demand'],
-                0
-            )
-            
-            affected_demand_dedup['customer_shortage'] = (
-                abs(affected_demand_dedup['product_net_gap']) * affected_demand_dedup['demand_share']
-            )
-            
-            affected_demand_dedup['customer_at_risk'] = (
-                affected_demand_dedup['product_at_risk_value'] * affected_demand_dedup['demand_share']
-            )
-            
-            # Group by customer
-            customer_agg = affected_demand_dedup.groupby('customer').agg({
-                'product_id': 'nunique',
-                'required_quantity': 'sum',
-                'customer_shortage': 'sum',
-                'total_value_usd': 'sum',
-                'customer_at_risk': 'sum',
-                'demand_source': lambda x: ', '.join(x.unique())
-            }).reset_index()
-            
-            customer_agg.columns = [
-                'customer', 'product_count', 'total_required', 
-                'total_shortage', 'total_demand_value', 'at_risk_value', 'sources'
-            ]
-            
-            # Get customer codes and urgency
-            customer_info = affected_demand_dedup.groupby('customer').first()[
-                ['customer_code', 'urgency_level']
-            ].reset_index()
-            
-            customer_agg = customer_agg.merge(customer_info, on='customer', how='left')
-            
-            # Determine overall urgency per customer
-            urgency_priority = {'OVERDUE': 0, 'URGENT': 1, 'UPCOMING': 2, 'FUTURE': 3}
-            customer_urgency = affected_demand_dedup.groupby('customer')['urgency_level'].apply(
-                lambda x: min(x, key=lambda v: urgency_priority.get(v, 999), default='FUTURE')
-            ).reset_index()
-            customer_urgency.columns = ['customer', 'urgency']
-            
-            customer_agg = customer_agg.merge(customer_urgency, on='customer', how='left')
-            customer_agg.drop('urgency_level', axis=1, inplace=True, errors='ignore')
-            
-            # Build product details for each customer
-            customer_products = []
-            for customer_name in customer_agg['customer'].unique():
-                cust_demand = affected_demand_dedup[
-                    affected_demand_dedup['customer'] == customer_name
-                ].copy()
-                
-                # Sort by at-risk value and limit
-                cust_demand = cust_demand.sort_values('customer_at_risk', ascending=False)
-                cust_demand = cust_demand.head(MAX_PRODUCTS_PER_CUSTOMER)
-                
-                products = []
-                for _, row in cust_demand.iterrows():
-                    products.append({
-                        'pt_code': row.get('pt_code', ''),
-                        'product_name': row.get('product_name', ''),
-                        'brand': row.get('brand', ''),
-                        'required_quantity': row['required_quantity'],
-                        'shortage_quantity': row['customer_shortage'],
-                        'demand_value': row.get('total_value_usd', 0),
-                        'at_risk_value': row['customer_at_risk'],
-                        'coverage': row['product_coverage'] * 100,
-                        'urgency': row.get('urgency_level', 'N/A'),
-                        'source': row.get('demand_source', '')
-                    })
-                
-                customer_products.append({
-                    'customer': customer_name,
-                    'products': products
-                })
-            
-            # Merge product details back
-            products_df = pd.DataFrame(customer_products)
-            customer_agg = customer_agg.merge(products_df, on='customer', how='left')
-            
-            # Sort by at-risk value (descending)
-            customer_agg = customer_agg.sort_values('at_risk_value', ascending=False)
-            
-            logger.info(f"Successfully calculated affected data for {len(customer_agg)} customers")
-            return customer_agg
-            
-        except Exception as e:
-            logger.error(f"Error calculating customer affected data: {e}", exc_info=True)
-            st.error(f"Failed to calculate customer affected data: {str(e)}")
-            return pd.DataFrame()
     
     def export_excel(self, df: pd.DataFrame) -> Optional[bytes]:
         """
@@ -357,7 +110,7 @@ class CustomerAffectedDialog:
                         sheet.column_dimensions[column_letter].width = adjusted_width
             
             output.seek(0)
-            logger.info("Customer affected data exported to Excel successfully")
+            logger.info("Customer affected data exported to Excel")
             return output.getvalue()
             
         except Exception as e:
@@ -365,11 +118,12 @@ class CustomerAffectedDialog:
             st.error(f"Failed to export: {str(e)}")
             return None
 
+
 @st.dialog("Affected Customer Analysis", width="large")
 def show_customer_popup():
     """
-    Customer affected popup dialog
-    Tooltips removed (calculation details explained in separate tab)
+    Customer affected popup dialog - SIMPLIFIED
+    Gets pre-calculated data from GAPCalculationResult
     """
     session_manager = get_session_manager()
     
@@ -377,120 +131,70 @@ def show_customer_popup():
     if not session_manager.show_customer_dialog():
         return
     
-    # Validate session state data
-    required_keys = ['gap_filtered_demand', 'gap_shortage_products']
-    missing_keys = [key for key in required_keys if key not in st.session_state]
+    # Get calculation result
+    result = session_manager.get_gap_result()
     
-    if missing_keys:
-        st.error(f"Required data not found in session: {', '.join(missing_keys)}")
-        st.info("Please recalculate GAP analysis to refresh the data.")
-        
-        logger.error(f"Missing keys: {missing_keys}")
-        logger.debug(f"Available session keys: {list(st.session_state.keys())}")
-        
-        if st.button("Close", use_container_width=True, type="primary"):
-            session_manager.close_customer_dialog()
-            st.rerun()
-        return
-    
-    # Get data from session
-    shortage_ids, summary_metrics = session_manager.get_dialog_data()
-    
-    if not shortage_ids:
-        shortage_ids = st.session_state.get('gap_shortage_products', [])
-        if not shortage_ids:
-            st.error("No shortage products found")
-            if st.button("Close", use_container_width=True):
-                session_manager.close_customer_dialog()
-                st.rerun()
-            return
-    
-    # Validate demand data
-    demand_df = st.session_state.get('gap_filtered_demand')
-    if demand_df is None or demand_df.empty:
-        st.error("Demand data is empty or not available")
+    if result is None:
+        st.error("❌ No calculation result available")
+        st.info("Please calculate GAP analysis first.")
         if st.button("Close", use_container_width=True):
             session_manager.close_customer_dialog()
             st.rerun()
         return
     
-    # Quick validation check
-    matching_products = demand_df[demand_df['product_id'].isin(shortage_ids)]
-    if matching_products.empty:
-        st.warning("No matching products found in demand data")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Shortage Products", len(shortage_ids))
-        with col2:
-            st.metric("Demand Records", len(demand_df))
-        
+    # Check if customer impact data exists
+    if result.customer_impact is None or result.customer_impact.is_empty():
+        st.warning("No customer impact data available")
         st.info(
-            "Possible causes:\n"
-            "• Filters may have excluded all affected customers\n"
-            "• No demand exists for shortage products in selected date range\n"
-            "• Data synchronization issue - try recalculating"
+            "This could be because:\n"
+            "• No shortage items found\n"
+            "• Analysis not grouped by product\n"
+            "• No demand data for shortage products"
         )
-        
         if st.button("Close", use_container_width=True):
             session_manager.close_customer_dialog()
             st.rerun()
         return
     
-    # Get calculator and formatter from session
-    calculator = st.session_state.get('_temp_calculator')
+    # Get pre-calculated customer data
+    customer_data = result.customer_impact.customer_summary_df
+    
+    # Get formatter from session (for display)
     formatter = st.session_state.get('_temp_formatter')
-    gap_df = st.session_state.get('_temp_gap_df')
+    if formatter is None:
+        from .formatters import GAPFormatter
+        formatter = GAPFormatter()
     
-    if calculator is None or formatter is None:
-        st.error("Required components not available")
-        if st.button("Close", use_container_width=True):
-            session_manager.close_customer_dialog()
-            st.rerun()
-        return
-    
-    # Initialize dialog instance
+    # Initialize dialog helper
+    from .calculator import GAPCalculator
+    calculator = GAPCalculator()
     dialog = CustomerAffectedDialog(calculator, formatter)
     
-    # Calculate customer affected data
-    with st.spinner("Analyzing affected customers..."):
-        customer_data = dialog.calculate_customer_affected(
-            shortage_ids, 
-            demand_df,
-            gap_df,
-            calculator
-        )
-    
-    if customer_data.empty:
-        st.warning("No affected customers found after analysis")
-        st.info(
-            f"Analysis details:\n"
-            f"• Shortage products: {len(shortage_ids)}\n"
-            f"• Matching demand records: {len(matching_products)}\n"
-            f"• Unique customers in matching records: {matching_products['customer'].nunique()}"
-        )
-        if st.button("Close", use_container_width=True):
-            session_manager.close_customer_dialog()
-            st.rerun()
-        return
-    
     # Header
-    st.markdown("### Customer Affected Analysis")
-    st.caption("Customers affected by product shortages")
-
-    # Summary metrics (no tooltips)
+    st.markdown("### 👥 Customer Affected Analysis")
+    st.caption("Customers impacted by product shortages")
+    
+    # Summary metrics (from pre-calculated data)
     cols = st.columns(6)
     with cols[0]:
-        st.metric("Customers", formatter.format_number(len(customer_data)))
+        st.metric("Customers", formatter.format_number(result.customer_impact.affected_count))
     with cols[1]:
         st.metric("Products", formatter.format_number(customer_data['product_count'].sum()))
     with cols[2]:
-        total_demand = customer_data['total_demand_value'].sum()
-        st.metric("Total Demand", formatter.format_currency(total_demand, abbreviate=True))
+        st.metric(
+            "Total Demand", 
+            formatter.format_currency(customer_data['total_demand_value'].sum(), abbreviate=True)
+        )
     with cols[3]:
-        at_risk_total = customer_data['at_risk_value'].sum()
-        st.metric("Value at Risk", formatter.format_currency(at_risk_total, abbreviate=True))
+        st.metric(
+            "Value at Risk", 
+            formatter.format_currency(result.customer_impact.total_at_risk_value, abbreviate=True)
+        )
     with cols[4]:
-        st.metric("Total Shortage", formatter.format_number(customer_data['total_shortage'].sum()))
+        st.metric(
+            "Total Shortage", 
+            formatter.format_number(result.customer_impact.total_shortage_qty)
+        )
     with cols[5]:
         urgent = len(customer_data[customer_data['urgency'].isin(['OVERDUE', 'URGENT'])])
         if urgent > 0:
@@ -503,9 +207,18 @@ def show_customer_popup():
     # Controls
     ctrl_cols = st.columns([3, 1, 1])
     with ctrl_cols[0]:
-        search = st.text_input("Search", placeholder="Customer name or code...", key="dlg_search")
+        search = st.text_input(
+            "Search", 
+            placeholder="Customer name or code...", 
+            key="dlg_search"
+        )
     with ctrl_cols[1]:
-        page_size = st.selectbox("Show", ITEMS_PER_PAGE_OPTIONS, index=1, key="dlg_size")
+        page_size = st.selectbox(
+            "Show", 
+            ITEMS_PER_PAGE_OPTIONS, 
+            index=1, 
+            key="dlg_size"
+        )
     with ctrl_cols[2]:
         excel = dialog.export_excel(customer_data)
         if excel:
@@ -530,22 +243,22 @@ def show_customer_popup():
         st.info("No matches found")
     else:
         st.divider()
-        display_customers_no_tooltips(filtered, page_size, formatter, session_manager)
+        display_customers(filtered, page_size, formatter, session_manager)
     
     # Footer
     st.divider()
     if st.button("Close", use_container_width=True, type="primary"):
-        for key in ['_temp_calculator', '_temp_formatter', '_temp_gap_df']:
-            if key in st.session_state:
-                del st.session_state[key]
         session_manager.close_customer_dialog()
         st.rerun()
 
 
-def display_customers_no_tooltips(data: pd.DataFrame, page_size: int, formatter, session_manager) -> None:
-    """
-    Display customer list (tooltips removed)
-    """
+def display_customers(
+    data: pd.DataFrame, 
+    page_size: int, 
+    formatter, 
+    session_manager
+) -> None:
+    """Display customer list with pagination"""
     total = len(data)
     pages = max(1, (total + page_size - 1) // page_size)
     
@@ -568,7 +281,12 @@ def display_customers_no_tooltips(data: pd.DataFrame, page_size: int, formatter,
     
     for _, row in page_data.iterrows():
         icon = urgency_icons.get(row['urgency'], '⚪')
-        with st.expander(f"{icon} **{row['customer']}** ({row['customer_code']}) - {row['product_count']} products affected", expanded=False):
+        with st.expander(
+            f"{icon} **{row['customer']}** ({row['customer_code']}) - "
+            f"{row['product_count']} products affected", 
+            expanded=False
+        ):
+            # Metrics
             m_cols = st.columns(5)
             with m_cols[0]:
                 st.metric("Required", formatter.format_number(row['total_required']))
@@ -582,17 +300,24 @@ def display_customers_no_tooltips(data: pd.DataFrame, page_size: int, formatter,
                 st.metric("Urgency", row['urgency'])
             
             st.divider()
+            
+            # Tabs for products and calculations
             tab1, tab2 = st.tabs(["📦 Affected Products", "📊 Calculation Details"])
             
             with tab1:
                 st.caption("**Product-level breakdown:**")
-                h_cols = st.columns([0.3, 2, 1, 1, 1, 1, 0.8])
-                for h in ["#", "Product", "Required", "Shortage", "At Risk", "Coverage", "Urgency"]:
-                    h_cols.pop(0).caption(h)
                 
+                # Header row
+                h_cols = st.columns([0.3, 2, 1, 1, 1, 1, 0.8])
+                headers = ["#", "Product", "Required", "Shortage", "At Risk", "Coverage", "Urgency"]
+                for col, header in zip(h_cols, headers):
+                    col.caption(header)
+                
+                # Product rows
                 products = row['products'][:MAX_PRODUCTS_PER_CUSTOMER]
                 for i, prod in enumerate(products, 1):
                     p_cols = st.columns([0.3, 2, 1, 1, 1, 1, 0.8])
+                    
                     with p_cols[0]:
                         st.text(str(i))
                     with p_cols[1]:
@@ -619,38 +344,48 @@ def display_customers_no_tooltips(data: pd.DataFrame, page_size: int, formatter,
                         st.markdown(urg_icon)
                 
                 if len(row['products']) > MAX_PRODUCTS_PER_CUSTOMER:
-                    st.caption(f"... and {len(row['products']) - MAX_PRODUCTS_PER_CUSTOMER} more products")
+                    st.caption(
+                        f"... and {len(row['products']) - MAX_PRODUCTS_PER_CUSTOMER} more products"
+                    )
             
             with tab2:
-                # Keep full detail explanation
+                # Calculation explanation
                 st.markdown(f"""
                 **How these numbers are calculated:**
 
                 ### 1️⃣ Shortage Allocation
-                Customer requires **{formatter.format_number(row['total_required'])}** units across **{row['product_count']}** products.
+                Customer requires **{formatter.format_number(row['total_required'])}** units 
+                across **{row['product_count']}** products.
 
-                Based on fair-share allocation:
-                ```
-                Customer Shortage = Product Shortage × (Customer Demand / Total Product Demand)
-                ```
+                For each product, the customer's shortage is calculated as:
+                    Customer Shortage = Product Shortage × (Customer Demand ÷ Total Product Demand)
 
                 ### 2️⃣ At Risk Value
                 - Total order value: **{formatter.format_currency(row['total_demand_value'])}**
                 - Unfulfilled quantity: **{formatter.format_number(row['total_shortage'])}**
-                - At risk: **{formatter.format_currency(row['at_risk_value'])}**
+                - Revenue at risk: **{formatter.format_currency(row['at_risk_value'])}**
 
-                ### 3️⃣ Coverage
-                ```
-                Coverage % = (Available Supply / Total Demand) × 100
-                ```
+                The at-risk value represents the portion of the customer's order value that 
+                cannot be fulfilled due to shortages.
 
-                ### 4️⃣ Urgency
-                🔴 Overdue | 🟠 Urgent | 🟡 Upcoming | 🟢 Future
+                ### 3️⃣ Coverage Calculation
+                    Coverage % = (Available Supply ÷ Total Demand) × 100
+                    - 🔴 <50%: Severe shortage
+                    - 🟡 50-80%: High shortage
+                    - 🟢 80-100%: Moderate shortage
 
-                ### 5️⃣ Demand Sources
-                {row['sources']}
-                """)
+                    ### 4️⃣ Urgency Levels
+                    Based on required dates:
+                    - 🔴 **OVERDUE**: Past due date
+                    - 🟠 **URGENT**: Due within 7 days
+                    - 🟡 **UPCOMING**: Due within 30 days
+                    - 🟢 **FUTURE**: Due after 30 days
+
+                    ### 5️⃣ Demand Sources
+                    {row['sources']}
+                    """)
     
+    # Pagination
     if pages > 1:
         st.divider()
         pag_cols = st.columns([1, 3, 1])
@@ -659,7 +394,10 @@ def display_customers_no_tooltips(data: pd.DataFrame, page_size: int, formatter,
                 session_manager.set_dialog_page(page - 1, pages)
                 st.rerun()
         with pag_cols[1]:
-            st.markdown(f"<div style='text-align: center; padding: 8px;'>Page {page} of {pages}</div>", unsafe_allow_html=True)
+            st.markdown(
+                f"<div style='text-align: center; padding: 8px;'>Page {page} of {pages}</div>", 
+                unsafe_allow_html=True
+            )
         with pag_cols[2]:
             if st.button("Next", disabled=(page == pages), use_container_width=True, key="dlg_next"):
                 session_manager.set_dialog_page(page + 1, pages)

@@ -1,21 +1,20 @@
 # pages/1_📊_Net_GAP.py
 
 """
-Net GAP Analysis Page - Version 2.4 FIXED
-- Fixed customer dialog data persistence issue
-- Improved session state management
-- Better error handling and validation
-- Consistent data flow from calculation to dialogs
+Net GAP Analysis Page - Version 3.0 REFACTORED
+- Uses GAPCalculationResult (single source of truth)
+- Removed date range and customer filters
+- Fixed Excel export formatting (no more 999 values)
+- Simplified data flow and state management
 """
 
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import datetime, date, timedelta
+from datetime import datetime
 import logging
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Tuple
 import io
-import time
 import os
 from pathlib import Path
 
@@ -43,13 +42,12 @@ from utils.net_gap.calculator import GAPCalculator
 from utils.net_gap.formatters import GAPFormatter
 from utils.net_gap.filters import GAPFilters, QUICK_FILTER_BASE, QUICK_FILTER_SAFETY
 from utils.net_gap.charts import GAPCharts
-from utils.net_gap.customer_dialog import CustomerAffectedDialog, show_customer_popup
+from utils.net_gap.customer_dialog import show_customer_popup
 from utils.net_gap.field_explanations import show_field_explanations, get_field_tooltip
 
 # Constants
 MAX_EXPORT_ROWS = 10000
-DATA_LOAD_WARNING_SECONDS = 5
-VERSION = "2.4"
+VERSION = "3.0"
 
 
 def initialize_components():
@@ -60,35 +58,8 @@ def initialize_components():
     formatter = GAPFormatter()
     filters = GAPFilters(data_loader)
     charts = GAPCharts(formatter)
-    customer_dialog = CustomerAffectedDialog(calculator, formatter)
     
-    return session_manager, data_loader, calculator, formatter, filters, charts, customer_dialog
-
-
-def validate_data(df: pd.DataFrame, data_type: str) -> bool:
-    """
-    Validate dataframe has required columns
-    
-    Args:
-        df: DataFrame to validate
-        data_type: 'supply' or 'demand'
-    
-    Returns:
-        True if valid, False otherwise
-    """
-    if df.empty:
-        return True  # Empty is valid, just no data
-    
-    if data_type == 'supply':
-        required = ['supply_source', 'available_quantity', 'product_id']
-    else:  # demand
-        required = ['demand_source', 'required_quantity', 'product_id']
-    
-    missing = [col for col in required if col not in df.columns]
-    if missing:
-        st.error(f"Missing required columns in {data_type} data: {missing}")
-        return False
-    return True
+    return session_manager, data_loader, calculator, formatter, filters, charts
 
 
 def handle_error(e: Exception) -> None:
@@ -98,7 +69,6 @@ def handle_error(e: Exception) -> None:
     
     logger.error(f"Error in Net GAP analysis: {e}", exc_info=True)
     
-    # Handle custom exceptions
     if isinstance(e, ValidationError):
         st.error(f"⚠️ Validation Error: {str(e)}")
         st.info("Please check your filter selections and try again.")
@@ -109,7 +79,6 @@ def handle_error(e: Exception) -> None:
         st.info("Please try refreshing the page or contact support if the issue persists.")
         return
     
-    # Handle general errors
     if "connection" in error_msg or "connect" in error_msg:
         st.error("🔌 Database connection issue. Please refresh the page and try again.")
     elif "permission" in error_msg or "denied" in error_msg:
@@ -123,99 +92,103 @@ def handle_error(e: Exception) -> None:
         st.code(str(e))
 
 
-def load_data_with_timing(
+def load_and_calculate_gap(
     data_loader: GAPDataLoader,
+    calculator: GAPCalculator,
     filter_values: Dict[str, Any]
-) -> tuple[pd.DataFrame, pd.DataFrame, Optional[pd.DataFrame]]:
+):
     """
-    Load supply, demand, and safety stock data with timing and validation
+    Load data and calculate GAP, returning GAPCalculationResult
     
-    Args:
-        data_loader: GAPDataLoader instance
-        filter_values: Filter configuration
-        
     Returns:
-        Tuple of (supply_df, demand_df, safety_stock_df)
+        GAPCalculationResult object
     """
-    start_time = time.time()
-    include_safety = filter_values.get('include_safety_stock', False)
-    
-    with st.spinner("Loading data..."):
-        # Load supply data (convert lists to tuples for cache)
+    with st.spinner("🔄 Loading data and calculating GAP..."):
+        # Load supply data (all dates)
         supply_df = data_loader.load_supply_data(
             entity_name=filter_values.get('entity'),
-            date_from=filter_values.get('date_range')[0],
-            date_to=filter_values.get('date_range')[1],
             product_ids=filter_values.get('products_tuple'),
             brands=filter_values.get('brands_tuple')
         )
         
-        # Load demand data
+        # Load demand data (all dates, all customers)
         demand_df = data_loader.load_demand_data(
             entity_name=filter_values.get('entity'),
-            date_from=filter_values.get('date_range')[0],
-            date_to=filter_values.get('date_range')[1],
             product_ids=filter_values.get('products_tuple'),
-            brands=filter_values.get('brands_tuple'),
-            customers=filter_values.get('customers_tuple')
+            brands=filter_values.get('brands_tuple')
         )
         
         # Load safety stock if included
         safety_stock_df = None
-        if include_safety:
+        if filter_values.get('include_safety_stock', False):
             safety_stock_df = data_loader.load_safety_stock_data(
                 entity_name=filter_values.get('entity'),
                 product_ids=filter_values.get('products_tuple'),
                 include_customer_specific=True
             )
-    
-    load_time = time.time() - start_time
-    if load_time > DATA_LOAD_WARNING_SECONDS:
-        st.info(f"⏱️ Data loading took {load_time:.1f} seconds")
-    
-    logger.info(
-        f"Data loaded: {len(supply_df)} supply, {len(demand_df)} demand, "
-        f"{len(safety_stock_df) if safety_stock_df is not None else 0} safety stock records"
-    )
-    
-    return supply_df, demand_df, safety_stock_df
-
-
-def calculate_gap_with_progress(
-    calculator: GAPCalculator,
-    supply_df: pd.DataFrame,
-    demand_df: pd.DataFrame,
-    safety_stock_df: Optional[pd.DataFrame],
-    filter_values: Dict[str, Any]
-) -> pd.DataFrame:
-    """
-    Calculate GAP with progress indicator
-    
-    Args:
-        calculator: GAPCalculator instance
-        supply_df: Supply data
-        demand_df: Demand data
-        safety_stock_df: Safety stock data (optional)
-        filter_values: Filter configuration
         
-    Returns:
-        GAP analysis DataFrame
-    """
-    include_safety = filter_values.get('include_safety_stock', False)
-    
-    with st.spinner("Calculating GAP analysis..."):
-        gap_df = calculator.calculate_net_gap(
+        # Validate data
+        if supply_df.empty and demand_df.empty:
+            st.warning(
+                "No data available for the selected filters. "
+                "Please adjust your filters and try again."
+            )
+            st.stop()
+        
+        logger.info(f"Data loaded: {len(supply_df)} supply, {len(demand_df)} demand records")
+        
+        # Calculate GAP (returns GAPCalculationResult)
+        result = calculator.calculate_net_gap(
             supply_df=supply_df,
             demand_df=demand_df,
             safety_stock_df=safety_stock_df,
             group_by=filter_values.get('group_by', 'product'),
             selected_supply_sources=filter_values.get('supply_sources'),
             selected_demand_sources=filter_values.get('demand_sources'),
-            include_safety_stock=include_safety
+            include_safety_stock=filter_values.get('include_safety_stock', False)
         )
+        
+        logger.info(f"GAP calculated: {len(result.gap_df)} items, "
+                   f"{result.metrics.get('affected_customers', 0)} affected customers")
+        
+        return result
+
+
+def format_value_for_export(value: Any, field_name: str) -> Any:
+    """
+    Format values for Excel export (fix 999 issue)
     
-    logger.info(f"GAP calculated for {len(gap_df)} items")
-    return gap_df
+    Args:
+        value: Value to format
+        field_name: Name of the field
+        
+    Returns:
+        Properly formatted value for Excel
+    """
+    if pd.isna(value) or value is None:
+        return None
+    
+    # Handle special cases
+    if field_name == 'safety_coverage':
+        if value >= 999:
+            return None  # Excel will show as blank
+        return round(value, 2)
+    
+    if field_name == 'days_of_supply':
+        if value >= 999:
+            return None  # Excel will show as blank
+        return round(value, 1)
+    
+    if field_name == 'coverage_ratio':
+        if value > 10:
+            return None  # Excess coverage
+        return round(value, 2)
+    
+    # Numeric fields
+    if isinstance(value, (int, float)):
+        return round(value, 2) if isinstance(value, float) else value
+    
+    return value
 
 
 def export_to_excel(
@@ -225,165 +198,144 @@ def export_to_excel(
     include_safety: bool = False
 ) -> bytes:
     """
-    Export GAP analysis to Excel with safety stock information
-    
-    Args:
-        gap_df: GAP analysis dataframe
-        metrics: Summary metrics
-        filters: Applied filters
-        include_safety: Whether safety stock is included
-    
-    Returns:
-        Excel file as bytes
+    Export GAP analysis to Excel with proper formatting
+    FIXED: Handles safety_coverage and days_of_supply = 999
     """
     output = io.BytesIO()
     
     # Check data size
-    if len(gap_df) > MAX_EXPORT_ROWS:
-        st.warning(
-            f"⚠️ Large dataset ({len(gap_df)} rows). "
-            f"Export limited to {MAX_EXPORT_ROWS} rows."
-        )
-        gap_df = gap_df.head(MAX_EXPORT_ROWS)
+    export_df = gap_df.copy()
+    if len(export_df) > MAX_EXPORT_ROWS:
+        st.warning(f"⚠️ Large dataset. Export limited to {MAX_EXPORT_ROWS} rows.")
+        export_df = export_df.head(MAX_EXPORT_ROWS)
+    
+    # Prepare export DataFrame with proper formatting
+    export_columns = [
+        'product_id', 'product_name', 'pt_code', 'brand',
+        'total_supply', 'total_demand', 'net_gap',
+        'coverage_ratio', 'gap_percentage', 'gap_status',
+        'priority', 'suggested_action'
+    ]
+    
+    # Add safety stock columns if included
+    if include_safety:
+        export_columns.extend([
+            'safety_stock_qty', 'available_supply', 
+            'safety_coverage', 'days_of_supply', 'below_reorder'
+        ])
+    
+    # Add financial columns
+    if 'at_risk_value_usd' in export_df.columns:
+        export_columns.extend(['at_risk_value_usd', 'gap_value_usd'])
+    
+    # Filter to available columns
+    export_columns = [col for col in export_columns if col in export_df.columns]
+    export_df = export_df[export_columns].copy()
+    
+    # Format special fields
+    for col in export_df.columns:
+        if col in ['safety_coverage', 'days_of_supply', 'coverage_ratio']:
+            export_df[col] = export_df[col].apply(
+                lambda x: format_value_for_export(x, col)
+            )
     
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         # Summary sheet
         summary_rows = [
+            ('Report Generated', datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
+            ('', ''),
             ('Total Products', metrics['total_products']),
             ('Shortage Items', metrics['shortage_items']),
             ('Critical Items', metrics['critical_items']),
-            ('Coverage Rate (%)', f"{metrics['overall_coverage']:.1f}%"),
+            ('Coverage Rate (%)', f"{metrics['overall_coverage']:.1f}"),
+            ('', ''),
+            ('Total Supply', metrics['total_supply']),
+            ('Total Demand', metrics['total_demand']),
+            ('Net GAP', metrics['net_gap']),
+            ('', ''),
             ('Total Shortage', metrics['total_shortage']),
             ('Total Surplus', metrics['total_surplus']),
             ('At Risk Value (USD)', f"${metrics['at_risk_value_usd']:,.2f}"),
             ('Affected Customers', metrics['affected_customers']),
-            ('Supply Sources', ', '.join(filters.get('supply_sources', []))),
-            ('Demand Sources', ', '.join(filters.get('demand_sources', [])))
         ]
         
         # Add safety stock metrics if included
         if include_safety:
             summary_rows.extend([
-                ('Safety Stock Included', 'Yes'),
+                ('', ''),
+                ('Safety Stock Analysis', ''),
                 ('Below Safety Count', metrics.get('below_safety_count', 0)),
                 ('At Reorder Count', metrics.get('at_reorder_count', 0)),
-                ('Safety Stock Value', f"${metrics.get('safety_stock_value', 0):,.2f}")
+                ('Safety Stock Value', f"${metrics.get('safety_stock_value', 0):,.2f}"),
+                ('Expired Items', metrics.get('has_expired_count', 0)),
+                ('Expiry Risk Items', metrics.get('expiry_risk_count', 0))
             ])
         
         summary_data = pd.DataFrame(summary_rows, columns=['Metric', 'Value'])
         summary_data.to_excel(writer, sheet_name='Summary', index=False)
         
         # Detail sheet
-        gap_df.to_excel(writer, sheet_name='GAP Details', index=False)
+        export_df.to_excel(writer, sheet_name='GAP Details', index=False)
         
         # Filters sheet
         filters_data = pd.DataFrame({
             'Filter': [
-                'Entity', 'Date Range', 'Supply Sources', 'Demand Sources', 
-                'Products', 'Brands', 'Customers', 'Group By', 'Safety Stock'
+                'Entity', 'Supply Sources', 'Demand Sources', 
+                'Products', 'Brands', 'Group By', 'Safety Stock'
             ],
             'Value': [
                 filters.get('entity', 'All'),
-                f"{filters.get('date_range', ['N/A'])[0]} to {filters.get('date_range', ['N/A', 'N/A'])[1]}",
                 ', '.join(filters.get('supply_sources', [])),
                 ', '.join(filters.get('demand_sources', [])),
                 f"{len(filters.get('products', []))} selected" if filters.get('products') else 'All',
                 ', '.join(filters.get('brands', [])) or 'All',
-                f"{len(filters.get('customers', []))} selected" if filters.get('customers') else 'All',
                 filters.get('group_by', 'product'),
                 'Yes' if filters.get('include_safety_stock', False) else 'No'
             ]
         })
         filters_data.to_excel(writer, sheet_name='Applied Filters', index=False)
+        
+        # Notes sheet
+        notes_data = pd.DataFrame({
+            'Note': [
+                'Special Values',
+                '- Blank cells in Safety Coverage or Days of Supply indicate values > 999',
+                '- Blank cells in Coverage Ratio indicate excessive surplus (>10x demand)',
+                '',
+                'Status Codes',
+                '- CRITICAL_BREACH: Inventory below 50% of safety stock',
+                '- BELOW_SAFETY: Inventory below safety stock level',
+                '- SEVERE_SHORTAGE: Coverage < 50%',
+                '- HIGH_SHORTAGE: Coverage 50-70%',
+                '- MODERATE_SHORTAGE: Coverage 70-90%',
+                '- BALANCED: Coverage 90-110%',
+                '- SURPLUS: Coverage > 110%'
+            ]
+        })
+        notes_data.to_excel(writer, sheet_name='Notes', index=False)
     
     output.seek(0)
-    logger.info("Excel export generated successfully")
+    logger.info("Excel export generated successfully with proper formatting")
     return output.getvalue()
 
 
-def display_visualizations(
-    gap_df: pd.DataFrame, 
-    filter_values: Dict, 
-    charts: GAPCharts, 
-    include_safety: bool
-) -> None:
-    """Display visualization tabs"""
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "📊 Status Distribution", 
-        "📉 Top Shortages", 
-        "📈 Supply vs Demand", 
-        "🔍 Coverage Analysis"
-    ])
-    
-    with tab1:
-        if not gap_df.empty:
-            fig_pie = charts.create_status_pie_chart(gap_df)
-            st.plotly_chart(fig_pie, use_container_width=True)
-    
-    with tab2:
-        col1, col2 = st.columns([3, 1])
-        with col2:
-            top_n = st.number_input("Top N items", min_value=5, max_value=20, value=10)
-        
-        # Filter for shortage items based on context
-        if include_safety:
-            shortage_statuses = [
-                'SEVERE_SHORTAGE', 'HIGH_SHORTAGE', 'MODERATE_SHORTAGE',
-                'BELOW_SAFETY', 'CRITICAL_BREACH'
-            ]
-        else:
-            shortage_statuses = ['SEVERE_SHORTAGE', 'HIGH_SHORTAGE', 'MODERATE_SHORTAGE']
-        
-        shortage_df = gap_df[gap_df['gap_status'].isin(shortage_statuses)]
-        
-        if not shortage_df.empty:
-            fig_bar = charts.create_top_shortage_bar_chart(shortage_df, top_n=top_n)
-            st.plotly_chart(fig_bar, use_container_width=True)
-        else:
-            st.info("No shortage items to display")
-    
-    with tab3:
-        if not gap_df.empty:
-            fig_comparison = charts.create_supply_demand_comparison(gap_df, top_n=15)
-            st.plotly_chart(fig_comparison, use_container_width=True)
-    
-    with tab4:
-        if not gap_df.empty:
-            fig_coverage = charts.create_coverage_distribution(gap_df)
-            st.plotly_chart(fig_coverage, use_container_width=True)
-
-
 def format_coverage_value(row: pd.Series) -> str:
-    """
-    Format coverage ratio for better readability
-    
-    Args:
-        row: DataFrame row containing coverage_ratio, total_demand, total_supply
-        
-    Returns:
-        Formatted string representation
-    """
+    """Format coverage ratio for display"""
     ratio = row.get('coverage_ratio', 0)
     demand = row.get('total_demand', 0)
     supply = row.get('total_supply', 0)
     
-    # Special cases
     if pd.isna(ratio):
         return "—"
     
     if demand == 0:
-        if supply > 0:
-            return "No Demand"
-        else:
-            return "—"
+        return "No Demand" if supply > 0 else "—"
     
     if supply == 0:
         return "0%"
     
-    # Convert to percentage
     percentage = ratio * 100
     
-    # Format based on value range
     if percentage > 999:
         return ">999%"
     elif percentage < 1:
@@ -399,10 +351,10 @@ def prepare_display_dataframe(
     include_safety: bool,
     session_manager
 ) -> pd.DataFrame:
-    """Prepare dataframe for display with formatting and column selection"""
+    """Prepare dataframe for display with formatting"""
     display_df = gap_df.copy()
     
-    # Enhanced status mapping with safety stock statuses
+    # Status mapping
     status_display = {
         'CRITICAL_BREACH': '🚨 Critical Breach',
         'BELOW_SAFETY': '⚠️ Below Safety',
@@ -424,14 +376,10 @@ def prepare_display_dataframe(
     
     # Format numeric columns
     if 'total_supply' in display_df.columns:
-        display_df['Supply'] = display_df['total_supply'].apply(
-            lambda x: formatter.format_number(x)
-        )
+        display_df['Supply'] = display_df['total_supply'].apply(formatter.format_number)
     
     if 'total_demand' in display_df.columns:
-        display_df['Demand'] = display_df['total_demand'].apply(
-            lambda x: formatter.format_number(x)
-        )
+        display_df['Demand'] = display_df['total_demand'].apply(formatter.format_number)
     
     if 'net_gap' in display_df.columns:
         display_df['Net GAP'] = display_df['net_gap'].apply(
@@ -447,18 +395,18 @@ def prepare_display_dataframe(
             lambda x: f"{x:+.1f}%" if pd.notna(x) else "N/A"
         )
     
-    # Safety stock columns (when included)
+    # Safety stock columns
     if include_safety:
         if 'safety_stock_qty' in display_df.columns:
             display_df['Safety Stock'] = display_df['safety_stock_qty'].apply(
-                lambda x: formatter.format_number(x)
+                formatter.format_number
             )
         
         if 'available_supply' in display_df.columns:
             display_df['Available'] = display_df['available_supply'].apply(
-                lambda x: formatter.format_number(x)
+                formatter.format_number
             )
-            true_gap = display_df['available_supply'] - display_df.get('total_demand', 0)
+            true_gap = display_df['total_supply'] - display_df.get('total_demand', 0)
             display_df['True GAP'] = true_gap.apply(
                 lambda x: formatter.format_number(x, show_sign=True)
             )
@@ -473,11 +421,11 @@ def prepare_display_dataframe(
                 lambda x: '⚠️ Yes' if x else '✅ No'
             )
     
-    # Rename suggested_action for better display
+    # Action
     if 'suggested_action' in display_df.columns:
         display_df['Action'] = display_df['suggested_action']
     
-    # Format financial columns with currency
+    # Financial columns
     if 'at_risk_value_usd' in display_df.columns:
         display_df['At Risk Value'] = display_df['at_risk_value_usd'].apply(
             lambda x: formatter.format_currency(x, abbreviate=True)
@@ -488,7 +436,7 @@ def prepare_display_dataframe(
             lambda x: formatter.format_currency(x, abbreviate=True)
         )
     
-    # Get selected columns from session manager
+    # Get selected columns
     col_config = session_manager.get_table_columns_config()
     columns = []
     
@@ -503,7 +451,7 @@ def prepare_display_dataframe(
     if col_config['supply']:
         columns.extend(['Supply', 'Demand', 'Net GAP'])
     
-    # Safety Stock columns
+    # Safety Stock
     if col_config['safety'] and include_safety:
         if 'Safety Stock' in display_df.columns:
             columns.extend(['Safety Stock', 'Available', 'True GAP'])
@@ -538,15 +486,7 @@ def display_paginated_table(
     session_manager,
     key_prefix: str = "main"
 ) -> None:
-    """
-    Display paginated dataframe with SessionStateManager
-    
-    Args:
-        df: DataFrame to display
-        items_per_page: Number of items per page
-        session_manager: SessionStateManager instance
-        key_prefix: Unique prefix for widget keys to avoid conflicts
-    """
+    """Display paginated dataframe"""
     if df.empty:
         st.info("No data matches the current filters")
         return
@@ -554,19 +494,16 @@ def display_paginated_table(
     total_items = len(df)
     total_pages = max(1, (total_items + items_per_page - 1) // items_per_page)
     
-    # Get and validate page from session manager
     page = session_manager.get_current_page()
     session_manager.set_current_page(page, total_pages)
     page = session_manager.get_current_page()
     
-    # Calculate indices
     start_idx = (page - 1) * items_per_page
     end_idx = min(start_idx + items_per_page, total_items)
     
-    # Display the data table with tooltips
     page_df = df.iloc[start_idx:end_idx]
     
-    # Add column configuration with tooltips
+    # Add column tooltips
     column_config = {}
     for col in page_df.columns:
         tooltip = get_field_tooltip(col)
@@ -589,12 +526,12 @@ def display_paginated_table(
         col1, col2, col3, col4, col5 = st.columns([1, 1, 3, 1, 1])
         
         with col1:
-            if st.button("⏮️", disabled=(page == 1), use_container_width=True, key=f"{key_prefix}_page_first"):
+            if st.button("⏮️", disabled=(page == 1), use_container_width=True, key=f"{key_prefix}_first"):
                 session_manager.set_current_page(1, total_pages)
                 st.rerun()
         
         with col2:
-            if st.button("⬅️", disabled=(page == 1), use_container_width=True, key=f"{key_prefix}_page_prev"):
+            if st.button("⬅️", disabled=(page == 1), use_container_width=True, key=f"{key_prefix}_prev"):
                 session_manager.set_current_page(page - 1, total_pages)
                 st.rerun()
         
@@ -608,171 +545,125 @@ def display_paginated_table(
             )
         
         with col4:
-            if st.button("➡️", disabled=(page == total_pages), use_container_width=True, key=f"{key_prefix}_page_next"):
+            if st.button("➡️", disabled=(page == total_pages), use_container_width=True, key=f"{key_prefix}_next"):
                 session_manager.set_current_page(page + 1, total_pages)
                 st.rerun()
         
         with col5:
-            if st.button("⏭️", disabled=(page == total_pages), use_container_width=True, key=f"{key_prefix}_page_last"):
-                session_manager.set_dialog_page(total_pages, total_pages)
+            if st.button("⏭️", disabled=(page == total_pages), use_container_width=True, key=f"{key_prefix}_last"):
+                session_manager.set_current_page(total_pages, total_pages)
                 st.rerun()
 
 
 def display_data_table(
-    gap_df: pd.DataFrame, 
+    result,
     filter_values: Dict, 
     formatter: GAPFormatter, 
-    metrics: Dict, 
     include_safety: bool,
     session_manager,
     filters: GAPFilters
 ) -> None:
-    """Display the main data table with quick filter, search, column selection, and export"""
+    """Display main data table with quick filter and controls"""
+    
+    gap_df = result.gap_df.copy()
+    metrics = result.metrics
     
     # Quick Filter Section
     st.markdown("### 🔍 Quick Filter")
     st.caption("Filter results without recalculating GAP")
     
-    # Get appropriate filter options based on safety stock
-    if include_safety:
-        filter_options = QUICK_FILTER_SAFETY
-    else:
-        filter_options = QUICK_FILTER_BASE
+    filter_options = QUICK_FILTER_SAFETY if include_safety else QUICK_FILTER_BASE
     
-    # Create radio buttons with format_func for labels
     quick_filter = st.radio(
         "Select filter view",
         options=list(filter_options.keys()),
         format_func=lambda x: filter_options[x]['label'],
         horizontal=True,
         label_visibility="collapsed",
-        key="quick_filter_radio_post_calc",
-        help="Filter displayed results by status. Does not require recalculation."
+        key="quick_filter_radio",
+        help="Filter displayed results by status"
     )
     
-    # Display tooltip for selected filter
-    selected_help = filter_options[quick_filter]['help']
-    st.caption(f"ℹ️ {selected_help}")
+    st.caption(f"ℹ️ {filter_options[quick_filter]['help']}")
     
     # Reset pagination when filter changes
     if st.session_state.get('_last_quick_filter') != quick_filter:
         session_manager.reset_pagination()
         st.session_state['_last_quick_filter'] = quick_filter
     
-    # Apply quick filter immediately
+    # Apply quick filter
     original_count = len(gap_df)
     if quick_filter != 'all':
         gap_df = filters.apply_quick_filter(gap_df, quick_filter, include_safety)
         filtered_count = len(gap_df)
         if filtered_count < original_count:
-            filter_label = filter_options[quick_filter]['label']
-            st.info(f"📊 Showing {filtered_count:,} of {original_count:,} items ({filter_label})")
+            st.info(f"📊 Showing {filtered_count:,} of {original_count:,} items "
+                   f"({filter_options[quick_filter]['label']})")
     
     st.divider()
     
-    # Help Section for Field Explanations
+    # Help Section
     help_col1, help_col2, help_col3 = st.columns([1, 3, 1])
     with help_col1:
-        if st.button("📖 View Formulas", use_container_width=True, key="show_formulas_btn"):
+        if st.button("📖 View Formulas", use_container_width=True, key="show_formulas"):
             st.session_state['show_formulas'] = not st.session_state.get('show_formulas', False)
     
-    # Show formulas section if button clicked
     if st.session_state.get('show_formulas', False):
         with st.container():
             st.divider()
             show_field_explanations(include_safety)
             st.divider()
     
-    # Column configuration section
+    # Column configuration
     with st.expander("⚙️ Table Configuration", expanded=False):
         st.markdown("**Select columns to display:**")
         
         col_config = session_manager.get_table_columns_config()
         
-        # Column selectors
         col1, col2, col3 = st.columns(3)
         
         new_config = {}
         
         with col1:
-            new_config['basic'] = st.checkbox(
-                "Basic Info", 
-                value=col_config['basic'],
-                key="col_basic_check",
-                help="PT Code, Product Name, Brand"
-            )
-            new_config['supply'] = st.checkbox(
-                "Supply & Demand", 
-                value=col_config['supply'],
-                key="col_supply_check",
-                help="Total Supply, Total Demand, Net GAP"
-            )
+            new_config['basic'] = st.checkbox("Basic Info", value=col_config['basic'], key="col_basic")
+            new_config['supply'] = st.checkbox("Supply & Demand", value=col_config['supply'], key="col_supply")
         
         with col2:
             if include_safety:
-                new_config['safety'] = st.checkbox(
-                    "Safety Stock", 
-                    value=col_config['safety'],
-                    key="col_safety_check",
-                    help="Safety Stock, Available Supply, True GAP"
-                )
+                new_config['safety'] = st.checkbox("Safety Stock", value=col_config['safety'], key="col_safety")
             else:
                 new_config['safety'] = False
-            
-            new_config['analysis'] = st.checkbox(
-                "Analysis", 
-                value=col_config['analysis'],
-                key="col_analysis_check",
-                help="Coverage, GAP %, Status, Action"
-            )
+            new_config['analysis'] = st.checkbox("Analysis", value=col_config['analysis'], key="col_analysis")
         
         with col3:
-            new_config['financial'] = st.checkbox(
-                "Financial", 
-                value=col_config['financial'],
-                key="col_financial_check",
-                help="At Risk Value, GAP Value in USD"
-            )
-            new_config['details'] = st.checkbox(
-                "Details", 
-                value=col_config['details'],
-                key="col_details_check",
-                help="Individual supply/demand source breakdowns"
-            )
+            new_config['financial'] = st.checkbox("Financial", value=col_config['financial'], key="col_financial")
+            new_config['details'] = st.checkbox("Details", value=col_config['details'], key="col_details")
         
-        # Update config in session manager
         session_manager.set_table_columns_config(new_config)
         
-        # Preset buttons
+        # Presets
         st.markdown("**Quick presets:**")
-        preset_col1, preset_col2, preset_col3, preset_col4 = st.columns(4)
+        preset_cols = st.columns(4)
         
-        with preset_col1:
-            if st.button("📊 Standard View", use_container_width=True):
-                session_manager.apply_table_preset('standard')
-                st.rerun()
-        
-        with preset_col2:
-            if st.button("🔒 Safety View", use_container_width=True):
-                session_manager.apply_table_preset('safety')
-                st.rerun()
-        
-        with preset_col3:
-            if st.button("💰 Financial View", use_container_width=True):
-                session_manager.apply_table_preset('financial')
-                st.rerun()
-        
-        with preset_col4:
-            if st.button("📋 All Columns", use_container_width=True):
-                session_manager.apply_table_preset('all')
-                st.rerun()
+        if preset_cols[0].button("📊 Standard", use_container_width=True):
+            session_manager.apply_table_preset('standard')
+            st.rerun()
+        if preset_cols[1].button("🔒 Safety", use_container_width=True):
+            session_manager.apply_table_preset('safety')
+            st.rerun()
+        if preset_cols[2].button("💰 Financial", use_container_width=True):
+            session_manager.apply_table_preset('financial')
+            st.rerun()
+        if preset_cols[3].button("📋 All", use_container_width=True):
+            session_manager.apply_table_preset('all')
+            st.rerun()
     
-    # Prepare display dataframe
+    # Prepare display
     display_df = prepare_display_dataframe(
         gap_df, filter_values, formatter, include_safety, session_manager
     )
     
-    # Controls row
+    # Controls
     col1, col2, col3 = st.columns([2, 1, 1])
     
     with col1:
@@ -786,6 +677,7 @@ def display_data_table(
                 lambda x: x.str.contains(search_term, case=False, na=False)
             ).any(axis=1)
             display_df = display_df[mask]
+            session_manager.reset_pagination()
     
     with col2:
         items_per_page = st.selectbox(
@@ -797,7 +689,12 @@ def display_data_table(
     
     with col3:
         if st.button("📥 Export to Excel", type="primary", use_container_width=True):
-            excel_data = export_to_excel(gap_df, metrics, filter_values, include_safety)
+            excel_data = export_to_excel(
+                result.gap_df,  # Use original gap_df for export
+                metrics, 
+                filter_values, 
+                include_safety
+            )
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             
             st.download_button(
@@ -808,24 +705,14 @@ def display_data_table(
             )
             st.success("✅ Export ready!")
     
-    # Display info
     st.caption(f"Showing {len(display_df.columns)} columns | {len(display_df)} items found")
     
-    # Reset pagination when search changes
-    if search_term:
-        session_manager.reset_pagination()
-    
-    # Display paginated table with tooltips
-    display_paginated_table(display_df, items_per_page, session_manager, key_prefix="main_table")
+    # Display table
+    display_paginated_table(display_df, items_per_page, session_manager, key_prefix="main")
 
 
 def render_action_buttons(session_manager, filters) -> Tuple[bool, bool]:
-    """
-    Render action buttons
-    
-    Returns:
-        Tuple of (calculate_clicked, force_recalculation)
-    """
+    """Render action buttons"""
     col1, col2, col3 = st.columns([1, 1, 2])
     
     force_recalc = False
@@ -833,7 +720,6 @@ def render_action_buttons(session_manager, filters) -> Tuple[bool, bool]:
     with col1:
         if st.button("🔄 Reset Filters", use_container_width=True):
             session_manager.reset_filters()
-            session_manager.reset_pagination()
             session_manager.clear_gap_calculation()
             st.rerun()
     
@@ -844,36 +730,33 @@ def render_action_buttons(session_manager, filters) -> Tuple[bool, bool]:
             use_container_width=True
         )
         if calculate_clicked:
-            # Force recalculation when button explicitly clicked
             force_recalc = True
     
     with col3:
         active_count = filters.count_active_filters()
         if active_count > 0:
-            st.info(f"✓ {active_count} filters active")
+            st.info(f"✔ {active_count} filters active")
     
     return calculate_clicked, force_recalc
 
 
 def main():
-    """Main application logic with proper data persistence for customer dialog"""
-    # Initialize authentication
+    """Main application logic"""
+    # Authentication
     auth_manager = AuthManager()
     
-    # Check authentication
     if not auth_manager.check_session():
         st.warning("⚠️ Please login to access this page")
         st.stop()
     
     # Initialize components
-    (session_manager, data_loader, calculator, formatter, 
-     filters, charts, customer_dialog) = initialize_components()
+    session_manager, data_loader, calculator, formatter, filters, charts = initialize_components()
     
     # Page header
     st.title("📊 Net GAP Analysis")
     st.markdown("Comprehensive supply-demand analysis with safety stock management")
     
-    # User info in sidebar
+    # Sidebar
     st.sidebar.markdown(f"👤 **User:** {auth_manager.get_user_display_name()}")
     if st.sidebar.button("🚪 Logout", use_container_width=True):
         auth_manager.logout()
@@ -881,11 +764,11 @@ def main():
     
     # Show customer dialog if needed
     if session_manager.show_customer_dialog():
-        # Validate session state has required data
-        if 'gap_filtered_demand' in st.session_state and 'gap_shortage_products' in st.session_state:
+        result = session_manager.get_gap_result()
+        if result and result.customer_impact:
             show_customer_popup()
         else:
-            logger.warning("Customer dialog requested but data not in session state")
+            logger.warning("Customer dialog requested but no customer impact data")
             session_manager.close_customer_dialog()
     
     # Render filters
@@ -898,16 +781,16 @@ def main():
     # Action buttons
     calculate_clicked, force_recalc = render_action_buttons(session_manager, filters)
     
-    # Check if we should show results
+    # Check if calculation needed
     should_recalculate = force_recalc or session_manager.should_recalculate(filter_values)
     has_results = session_manager.is_gap_calculated()
     
-    # If no results and calculate button not clicked, show initial message
+    # Show initial message
     if not has_results and not calculate_clicked:
         st.info("👆 Configure filters and click 'Calculate GAP' to begin analysis")
         st.stop()
     
-    # If results exist but filters changed, show warning
+    # Show warning if filters changed
     if has_results and should_recalculate and not calculate_clicked:
         st.warning(
             "⚠️ Filters have changed since last calculation. "
@@ -916,95 +799,15 @@ def main():
         st.info("Showing previous results below...")
     
     try:
-        # Determine if we need to calculate or use cached results
+        # Calculate or use cached
         if should_recalculate or not has_results:
-            # Perform calculation
-            with st.spinner("📄 Calculating GAP analysis..."):
-                # Load data
-                supply_df, demand_df, safety_stock_df = load_data_with_timing(
-                    data_loader, filter_values
-                )
-                
-                # Validate data
-                if not validate_data(supply_df, 'supply') or not validate_data(demand_df, 'demand'):
-                    st.stop()
-                
-                # Check if data is available
-                if supply_df.empty and demand_df.empty:
-                    st.warning(
-                        "No data available for the selected filters. "
-                        "Please adjust your filters and try again."
-                    )
-                    st.stop()
-                
-                # CRITICAL: Store raw data in session state BEFORE calculation
-                st.session_state['gap_raw_supply'] = supply_df.copy()
-                st.session_state['gap_raw_demand'] = demand_df.copy()
-                st.session_state['gap_filters'] = filter_values.copy()
-                st.session_state['last_gap_filters'] = filter_values.copy()
-                
-                # Calculate GAP (full dataset, no quick filter applied yet)
-                gap_df = calculate_gap_with_progress(
-                    calculator, supply_df, demand_df, safety_stock_df, filter_values
-                )
-                
-                # Calculate metrics on full dataset
-                metrics = calculator.get_summary_metrics(gap_df)
-                
-                # Store results in session manager (full dataset)
-                session_manager.set_gap_calculated(gap_df, metrics, filter_values)
-                
-                # CRITICAL: Ensure filtered demand is in session state
-                # This should already be done in calculator, but double-check
-                if 'gap_filtered_demand' not in st.session_state:
-                    st.session_state['gap_filtered_demand'] = demand_df.copy()
-                    logger.warning("Had to set gap_filtered_demand in main - should have been set in calculator")
-                
-                # Store shortage information
-                shortage_df = gap_df[gap_df['net_gap'] < 0]
-                if not shortage_df.empty and 'product_id' in shortage_df.columns:
-                    st.session_state['gap_shortage_products'] = shortage_df['product_id'].tolist()
-                    st.session_state['gap_shortage_df'] = shortage_df.copy()
-                
-                logger.info(f"GAP calculation completed: {len(gap_df)} items, "
-                           f"{len(st.session_state.get('gap_shortage_products', []))} shortage products")
-        
+            result = load_and_calculate_gap(data_loader, calculator, filter_values)
+            session_manager.set_gap_calculated(result)
         else:
-            # Use cached results
-            gap_df, metrics = session_manager.get_gap_results()
-            include_safety = filter_values.get('include_safety_stock', False)
-            
-            # CRITICAL: Ensure session state has demand data for dialog
-            if 'gap_filtered_demand' not in st.session_state:
-                logger.warning("gap_filtered_demand missing from session state, reloading...")
-                with st.spinner("Loading customer data..."):
-                    _, demand_df, _ = load_data_with_timing(data_loader, filter_values)
-                    st.session_state['gap_filtered_demand'] = demand_df
-                    logger.info(f"Reloaded {len(demand_df)} demand records into session state")
-            
-            # Ensure shortage products are in session state
-            if 'gap_shortage_products' not in st.session_state:
-                shortage_df = gap_df[gap_df['net_gap'] < 0]
-                if not shortage_df.empty and 'product_id' in shortage_df.columns:
-                    st.session_state['gap_shortage_products'] = shortage_df['product_id'].tolist()
-                    st.session_state['gap_shortage_df'] = shortage_df.copy()
-                    logger.info(f"Restored {len(shortage_df)} shortage products to session state")
-            
-            logger.info(f"Using cached GAP results: {len(gap_df)} items")
+            result = session_manager.get_gap_result()
+            logger.info(f"Using cached result: {len(result.gap_df)} items")
         
-        # Always ensure temporary data is available for dialogs and interactions
-        st.session_state['_temp_calculator'] = calculator
-        st.session_state['_temp_formatter'] = formatter
-        st.session_state['_temp_gap_df'] = gap_df
-        
-        # Log session state status for debugging
-        logger.info(f"Session state status - Keys: {list(st.session_state.keys())}")
-        if 'gap_filtered_demand' in st.session_state:
-            logger.info(f"gap_filtered_demand: {len(st.session_state['gap_filtered_demand'])} records")
-        if 'gap_shortage_products' in st.session_state:
-            logger.info(f"gap_shortage_products: {len(st.session_state['gap_shortage_products'])} products")
-        
-        # Display configuration summary
+        # Display configuration
         include_safety = filter_values.get('include_safety_stock', False)
         config_text = f"""
         **Analysis Configuration:**
@@ -1018,11 +821,10 @@ def main():
         
         st.info(config_text)
         
-        # Display KPI cards
+        # KPI cards
         st.subheader("📈 Key Metrics")
-        
         charts.create_kpi_cards(
-            metrics, 
+            result.metrics, 
             include_safety=include_safety,
             enable_customer_dialog=(filter_values.get('group_by') == 'product')
         )
@@ -1031,15 +833,57 @@ def main():
         
         # Visualizations
         st.subheader("📊 Visual Analysis")
-        display_visualizations(gap_df, filter_values, charts, include_safety)
+        
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "📊 Status Distribution", 
+            "📉 Top Shortages", 
+            "📈 Supply vs Demand", 
+            "🔍 Coverage Analysis"
+        ])
+        
+        with tab1:
+            if not result.gap_df.empty:
+                fig_pie = charts.create_status_pie_chart(result.gap_df)
+                st.plotly_chart(fig_pie, use_container_width=True)
+        
+        with tab2:
+            col1, col2 = st.columns([3, 1])
+            with col2:
+                top_n = st.number_input("Top N items", min_value=5, max_value=20, value=10)
+            
+            if include_safety:
+                shortage_statuses = [
+                    'SEVERE_SHORTAGE', 'HIGH_SHORTAGE', 'MODERATE_SHORTAGE',
+                    'BELOW_SAFETY', 'CRITICAL_BREACH'
+                ]
+            else:
+                shortage_statuses = ['SEVERE_SHORTAGE', 'HIGH_SHORTAGE', 'MODERATE_SHORTAGE']
+            
+            shortage_df = result.gap_df[result.gap_df['gap_status'].isin(shortage_statuses)]
+            
+            if not shortage_df.empty:
+                fig_bar = charts.create_top_shortage_bar_chart(shortage_df, top_n=top_n)
+                st.plotly_chart(fig_bar, use_container_width=True)
+            else:
+                st.info("No shortage items to display")
+        
+        with tab3:
+            if not result.gap_df.empty:
+                fig_comparison = charts.create_supply_demand_comparison(result.gap_df, top_n=15)
+                st.plotly_chart(fig_comparison, use_container_width=True)
+        
+        with tab4:
+            if not result.gap_df.empty:
+                fig_coverage = charts.create_coverage_distribution(result.gap_df)
+                st.plotly_chart(fig_coverage, use_container_width=True)
         
         st.divider()
         
-        # Detailed data table (with quick filter inside)
+        # Detailed table
         st.subheader("📋 Detailed GAP Analysis")
         display_data_table(
-            gap_df, filter_values, formatter, 
-            metrics, include_safety, session_manager, filters
+            result, filter_values, formatter, 
+            include_safety, session_manager, filters
         )
         
     except (ValidationError, DataLoadError) as e:
@@ -1049,12 +893,9 @@ def main():
     
     # Footer
     st.divider()
-    
-    # Show calculation timestamp if available
-    calc_time = st.session_state.get(session_manager.KEY_CALCULATION_TIMESTAMP)
-    if calc_time:
-        time_str = calc_time.strftime('%Y-%m-%d %H:%M:%S')
-        st.caption(f"Last calculated: {time_str} | Net GAP Analysis v{VERSION}")
+    if result:
+        calc_time = result.timestamp.strftime('%Y-%m-%d %H:%M:%S')
+        st.caption(f"Last calculated: {calc_time} | Net GAP Analysis v{VERSION}")
     else:
         st.caption(f"Net GAP Analysis v{VERSION}")
 
