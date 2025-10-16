@@ -1,11 +1,11 @@
 # utils/net_gap/session_manager.py
 
 """
-Session State Manager - Version 3.0 REFACTORED
-- Stores GAPCalculationResult (single object)
-- Auto-resets pagination on filter changes
-- Simplified dialog state management
-- Removed temporary state keys
+Session State Manager - Version 3.2 FIXED
+- Fixed customer dialog auto-popup bug
+- Added proper state isolation for dialog
+- Improved exclusion filter management
+- Better state change detection
 """
 
 import streamlit as st
@@ -25,15 +25,15 @@ class SessionStateManager:
     KEY_CURRENT_PAGE = 'current_page'
     KEY_SHOW_CUSTOMER_DIALOG = 'show_customer_dialog'
     KEY_DIALOG_PAGE = 'dlg_page'
+    KEY_DIALOG_REQUESTED = 'dialog_requested'  # NEW: Explicit dialog request flag
     KEY_TABLE_COL_BASIC = 'table_col_basic'
     KEY_TABLE_COL_SUPPLY = 'table_col_supply'
     KEY_TABLE_COL_SAFETY = 'table_col_safety'
     KEY_TABLE_COL_ANALYSIS = 'table_col_analysis'
     KEY_TABLE_COL_FINANCIAL = 'table_col_financial'
     KEY_TABLE_COL_DETAILS = 'table_col_details'
-    
-    # Calculation result key (single object)
     KEY_CALCULATION_RESULT = 'gap_calculation_result'
+    KEY_WIDGET_INTERACTION = 'widget_interaction_count'  # NEW: Track widget interactions
     
     def __init__(self):
         self._initialize_defaults()
@@ -45,6 +45,8 @@ class SessionStateManager:
             self.KEY_CURRENT_PAGE: 1,
             self.KEY_SHOW_CUSTOMER_DIALOG: False,
             self.KEY_DIALOG_PAGE: 1,
+            self.KEY_DIALOG_REQUESTED: False,
+            self.KEY_WIDGET_INTERACTION: 0,
             self.KEY_TABLE_COL_BASIC: True,
             self.KEY_TABLE_COL_SUPPLY: True,
             self.KEY_TABLE_COL_SAFETY: True,
@@ -64,6 +66,9 @@ class SessionStateManager:
             'entity': None,
             'products': [],
             'brands': [],
+            'exclude_products': False,
+            'exclude_brands': False,
+            'exclude_expired_inventory': True,
             'group_by': 'product',
             'supply_sources': ['INVENTORY', 'CAN_PENDING', 'WAREHOUSE_TRANSFER', 'PURCHASE_ORDER'],
             'demand_sources': ['OC_PENDING'],
@@ -91,12 +96,16 @@ class SessionStateManager:
         if filters.get('entity'):
             active.append(f"entity={filters['entity']}")
         if filters.get('products'):
-            active.append(f"products={len(filters['products'])}")
+            mode = "excluded" if filters.get('exclude_products') else "included"
+            active.append(f"products={len(filters['products'])} {mode}")
         if filters.get('brands'):
-            active.append(f"brands={len(filters['brands'])}")
+            mode = "excluded" if filters.get('exclude_brands') else "included"
+            active.append(f"brands={len(filters['brands'])} {mode}")
+        if filters.get('exclude_expired_inventory'):
+            active.append("no_expired")
         return ", ".join(active) if active else "no filters"
     
-    # GAP Calculation Result Management (Single Object)
+    # GAP Calculation Result Management
     def is_gap_calculated(self) -> bool:
         """Check if GAP has been calculated"""
         result = st.session_state.get(self.KEY_CALCULATION_RESULT)
@@ -141,19 +150,29 @@ class SessionStateManager:
         
         if current_hash != stored_hash:
             logger.info("Filters changed, recalculation needed")
-            self.reset_pagination()  # Auto-reset pagination
+            self.reset_pagination()
             return True
         
         return False
     
     def _hash_filters(self, filters: Dict[str, Any]) -> str:
         """Create hash of filters for comparison"""
+        def safe_str(val):
+            if val is None:
+                return 'None'
+            if isinstance(val, (list, tuple)):
+                return str(sorted(val) if val else [])
+            return str(val)
+        
         key_parts = [
-            str(filters.get('entity')),
-            str(sorted(filters.get('products', []))),
-            str(sorted(filters.get('brands', []))),
-            str(sorted(filters.get('supply_sources', []))),
-            str(sorted(filters.get('demand_sources', []))),
+            safe_str(filters.get('entity')),
+            safe_str(filters.get('products')),
+            safe_str(filters.get('brands')),
+            str(filters.get('exclude_products', False)),
+            str(filters.get('exclude_brands', False)),
+            str(filters.get('exclude_expired_inventory', True)),
+            safe_str(filters.get('supply_sources')),
+            safe_str(filters.get('demand_sources')),
             str(filters.get('include_safety_stock', False)),
             str(filters.get('group_by', 'product'))
         ]
@@ -177,22 +196,41 @@ class SessionStateManager:
         st.session_state[self.KEY_CURRENT_PAGE] = 1
         logger.debug("Pagination reset to page 1")
     
-    # Customer Dialog Management (Simplified)
+    # Customer Dialog Management - FIXED
     def show_customer_dialog(self) -> bool:
-        """Check if customer dialog should be shown"""
-        return st.session_state.get(self.KEY_SHOW_CUSTOMER_DIALOG, False)
+        """
+        Check if customer dialog should be shown
+        FIXED: Only show if explicitly requested, not on every widget interaction
+        """
+        # Check if dialog was explicitly requested
+        requested = st.session_state.get(self.KEY_DIALOG_REQUESTED, False)
+        
+        if requested:
+            # Clear the request flag to prevent auto-reopening
+            st.session_state[self.KEY_DIALOG_REQUESTED] = False
+            return True
+        
+        return False
     
     def open_customer_dialog(self) -> None:
-        """Open customer dialog (data from result object)"""
-        st.session_state[self.KEY_SHOW_CUSTOMER_DIALOG] = True
+        """
+        Request to open customer dialog
+        FIXED: Set explicit request flag instead of direct state
+        """
+        st.session_state[self.KEY_DIALOG_REQUESTED] = True
         st.session_state[self.KEY_DIALOG_PAGE] = 1
-        logger.info("Customer dialog opened")
+        logger.info("Customer dialog requested")
     
     def close_customer_dialog(self) -> None:
-        """Close customer dialog"""
+        """Close customer dialog and clear request"""
         st.session_state[self.KEY_SHOW_CUSTOMER_DIALOG] = False
+        st.session_state[self.KEY_DIALOG_REQUESTED] = False
         st.session_state[self.KEY_DIALOG_PAGE] = 1
         logger.info("Customer dialog closed")
+    
+    def is_dialog_open(self) -> bool:
+        """Check if dialog is currently open (used internally)"""
+        return st.session_state.get(self.KEY_SHOW_CUSTOMER_DIALOG, False)
     
     def get_dialog_page(self) -> int:
         """Get current dialog page"""
@@ -202,6 +240,24 @@ class SessionStateManager:
         """Set dialog page with validation"""
         validated_page = max(1, min(page, total_pages))
         st.session_state[self.KEY_DIALOG_PAGE] = validated_page
+    
+    # Widget Interaction Tracking - NEW
+    def track_widget_interaction(self) -> None:
+        """
+        Track widget interactions to prevent dialog auto-popup
+        This is called whenever a widget is interacted with
+        """
+        current_count = st.session_state.get(self.KEY_WIDGET_INTERACTION, 0)
+        st.session_state[self.KEY_WIDGET_INTERACTION] = current_count + 1
+        
+        # Clear any pending dialog requests if user is interacting with other widgets
+        if st.session_state.get(self.KEY_DIALOG_REQUESTED, False):
+            logger.debug("Widget interaction detected, clearing pending dialog request")
+            st.session_state[self.KEY_DIALOG_REQUESTED] = False
+    
+    def get_interaction_count(self) -> int:
+        """Get number of widget interactions"""
+        return st.session_state.get(self.KEY_WIDGET_INTERACTION, 0)
     
     # Table Column Configuration
     def get_table_columns_config(self) -> Dict[str, bool]:
@@ -255,6 +311,7 @@ class SessionStateManager:
         keys_to_clear = [
             self.KEY_FILTERS, self.KEY_CURRENT_PAGE,
             self.KEY_SHOW_CUSTOMER_DIALOG, self.KEY_DIALOG_PAGE,
+            self.KEY_DIALOG_REQUESTED, self.KEY_WIDGET_INTERACTION,
             self.KEY_CALCULATION_RESULT
         ]
         
@@ -272,7 +329,9 @@ class SessionStateManager:
         return {
             'filters_active': self._get_filter_summary(self.get_filters()),
             'current_page': self.get_current_page(),
-            'dialog_open': self.show_customer_dialog(),
+            'dialog_requested': st.session_state.get(self.KEY_DIALOG_REQUESTED, False),
+            'dialog_open': self.is_dialog_open(),
+            'widget_interactions': self.get_interaction_count(),
             'table_config': self.get_table_columns_config(),
             'has_result': result is not None,
             'calculation_time': result.timestamp.isoformat() if result else None,

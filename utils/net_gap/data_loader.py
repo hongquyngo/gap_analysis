@@ -1,10 +1,11 @@
 # utils/net_gap/data_loader.py
 
 """
-Data Loader for GAP Analysis - Version 3.0 REFACTORED
-- REMOVED: date_from, date_to parameters (loads all data)
-- REMOVED: customer filter (incorrect for GAP calculation)
-- Loads complete dataset for accurate supply vs demand analysis
+Data Loader for GAP Analysis - Version 3.2 ENHANCED
+- Added exclusion support for products and brands
+- Added exclude expired inventory option
+- Enhanced entity display with company_code
+- Enhanced product display with package_size
 """
 
 import pandas as pd
@@ -54,7 +55,7 @@ class DatabaseConnectionError(DataLoadError):
 
 
 class GAPDataLoader:
-    """Handles all data loading operations for GAP analysis"""
+    """Handles all data loading operations for GAP analysis with exclusion support"""
     
     def __init__(self):
         self._engine = None
@@ -224,7 +225,7 @@ class GAPDataLoader:
     
     @st.cache_data(ttl=CACHE_TTL_REFERENCE)
     def get_date_range(_self) -> Dict[str, date]:
-        """Get min/max dates from data (for display only, not filtering)"""
+        """Get min/max dates from data"""
         try:
             query = """
                 SELECT 
@@ -368,11 +369,21 @@ class GAPDataLoader:
         _self,
         entity_name: Optional[str] = None,
         product_ids: Optional[Tuple[int, ...]] = None,
-        brands: Optional[Tuple[str, ...]] = None
+        brands: Optional[Tuple[str, ...]] = None,
+        exclude_products: bool = False,
+        exclude_brands: bool = False,
+        exclude_expired: bool = True
     ) -> pd.DataFrame:
         """
-        Load ALL supply data (no date filtering)
-        Net GAP requires complete supply picture
+        Load supply data with exclusion support
+        
+        Args:
+            entity_name: Filter by entity
+            product_ids: Product IDs to include/exclude
+            brands: Brands to include/exclude
+            exclude_products: If True, exclude specified products
+            exclude_brands: If True, exclude specified brands
+            exclude_expired: If True, exclude expired inventory
         """
         try:
             _self._validate_entity_name(entity_name)
@@ -381,14 +392,17 @@ class GAPDataLoader:
             if brands:
                 _self._validate_list_input(list(brands), "brands", MAX_BRANDS)
             
-            query, params = _self._build_supply_query(entity_name, product_ids, brands)
+            query, params = _self._build_supply_query(
+                entity_name, product_ids, brands, 
+                exclude_products, exclude_brands, exclude_expired
+            )
             
             with _self.get_connection() as conn:
                 df = pd.read_sql(text(query), conn, params=params)
             
             df = _self._process_supply_dataframe(df)
             
-            logger.info(f"Loaded {len(df)} supply records (all dates)")
+            logger.info(f"Loaded {len(df)} supply records (exclude_expired={exclude_expired})")
             return df
             
         except ValidationError:
@@ -405,11 +419,19 @@ class GAPDataLoader:
         _self,
         entity_name: Optional[str] = None,
         product_ids: Optional[Tuple[int, ...]] = None,
-        brands: Optional[Tuple[str, ...]] = None
+        brands: Optional[Tuple[str, ...]] = None,
+        exclude_products: bool = False,
+        exclude_brands: bool = False
     ) -> pd.DataFrame:
         """
-        Load ALL demand data (no date or customer filtering)
-        Customer filter would create incorrect GAP (partial demand vs full supply)
+        Load demand data with exclusion support
+        
+        Args:
+            entity_name: Filter by entity
+            product_ids: Product IDs to include/exclude
+            brands: Brands to include/exclude
+            exclude_products: If True, exclude specified products
+            exclude_brands: If True, exclude specified brands
         """
         try:
             _self._validate_entity_name(entity_name)
@@ -418,14 +440,17 @@ class GAPDataLoader:
             if brands:
                 _self._validate_list_input(list(brands), "brands", MAX_BRANDS)
             
-            query, params = _self._build_demand_query(entity_name, product_ids, brands)
+            query, params = _self._build_demand_query(
+                entity_name, product_ids, brands,
+                exclude_products, exclude_brands
+            )
             
             with _self.get_connection() as conn:
                 df = pd.read_sql(text(query), conn, params=params)
             
             df = _self._process_demand_dataframe(df)
             
-            logger.info(f"Loaded {len(df)} demand records (all dates, all customers)")
+            logger.info(f"Loaded {len(df)} demand records")
             return df
             
         except ValidationError:
@@ -441,9 +466,12 @@ class GAPDataLoader:
         self,
         entity_name: Optional[str],
         product_ids: Optional[Tuple[int, ...]],
-        brands: Optional[Tuple[str, ...]]
+        brands: Optional[Tuple[str, ...]],
+        exclude_products: bool,
+        exclude_brands: bool,
+        exclude_expired: bool
     ) -> Tuple[str, Dict[str, Any]]:
-        """Build supply query WITHOUT date filtering"""
+        """Build supply query with exclusion support"""
         
         query_parts = ["""
             SELECT 
@@ -464,23 +492,42 @@ class GAPDataLoader:
         
         params = {}
         
+        # Entity filter
         if entity_name:
             query_parts.append("AND entity_name = :entity_name")
             params['entity_name'] = entity_name
         
+        # Product filter with exclusion support
         if product_ids:
             product_list = list(product_ids)
             placeholders = [f":prod_{i}" for i in range(len(product_list))]
-            query_parts.append(f"AND product_id IN ({','.join(placeholders)})")
+            
+            if exclude_products:
+                query_parts.append(f"AND product_id NOT IN ({','.join(placeholders)})")
+            else:
+                query_parts.append(f"AND product_id IN ({','.join(placeholders)})")
+            
             for i, pid in enumerate(product_list):
                 params[f'prod_{i}'] = pid
         
+        # Brand filter with exclusion support
         if brands:
             brand_list = list(brands)
             placeholders = [f":brand_{i}" for i in range(len(brand_list))]
-            query_parts.append(f"AND brand IN ({','.join(placeholders)})")
+            
+            if exclude_brands:
+                query_parts.append(f"AND brand NOT IN ({','.join(placeholders)})")
+            else:
+                query_parts.append(f"AND brand IN ({','.join(placeholders)})")
+            
             for i, brand in enumerate(brand_list):
                 params[f'brand_{i}'] = brand
+        
+        # Exclude expired inventory
+        if exclude_expired:
+            query_parts.append("""
+                AND (expiry_date IS NULL OR expiry_date > CURRENT_DATE())
+            """)
         
         query_parts.append("ORDER BY product_id, supply_priority, days_to_available")
         
@@ -490,9 +537,11 @@ class GAPDataLoader:
         self,
         entity_name: Optional[str],
         product_ids: Optional[Tuple[int, ...]],
-        brands: Optional[Tuple[str, ...]]
+        brands: Optional[Tuple[str, ...]],
+        exclude_products: bool,
+        exclude_brands: bool
     ) -> Tuple[str, Dict[str, Any]]:
-        """Build demand query WITHOUT date or customer filtering"""
+        """Build demand query with exclusion support"""
         
         query_parts = ["""
             SELECT 
@@ -513,21 +562,34 @@ class GAPDataLoader:
         
         params = {}
         
+        # Entity filter
         if entity_name:
             query_parts.append("AND entity_name = :entity_name")
             params['entity_name'] = entity_name
         
+        # Product filter with exclusion support
         if product_ids:
             product_list = list(product_ids)
             placeholders = [f":prod_{i}" for i in range(len(product_list))]
-            query_parts.append(f"AND product_id IN ({','.join(placeholders)})")
+            
+            if exclude_products:
+                query_parts.append(f"AND product_id NOT IN ({','.join(placeholders)})")
+            else:
+                query_parts.append(f"AND product_id IN ({','.join(placeholders)})")
+            
             for i, pid in enumerate(product_list):
                 params[f'prod_{i}'] = pid
         
+        # Brand filter with exclusion support
         if brands:
             brand_list = list(brands)
             placeholders = [f":brand_{i}" for i in range(len(brand_list))]
-            query_parts.append(f"AND brand IN ({','.join(placeholders)})")
+            
+            if exclude_brands:
+                query_parts.append(f"AND brand NOT IN ({','.join(placeholders)})")
+            else:
+                query_parts.append(f"AND brand IN ({','.join(placeholders)})")
+            
             for i, brand in enumerate(brand_list):
                 params[f'brand_{i}'] = brand
         
@@ -597,10 +659,10 @@ class GAPDataLoader:
         
         return df
     
-    # Reference Data
+    # Reference Data - Enhanced
     @st.cache_data(ttl=CACHE_TTL_REFERENCE)
     def get_entities(_self) -> List[str]:
-        """Get list of unique entities"""
+        """Get list of unique entity names"""
         try:
             query = """
                 SELECT DISTINCT entity_name 
@@ -626,8 +688,38 @@ class GAPDataLoader:
             raise DataLoadError(f"Failed to get entities: {str(e)}")
     
     @st.cache_data(ttl=CACHE_TTL_REFERENCE)
+    def get_entities_formatted(_self) -> pd.DataFrame:
+        """Get entities with company_code for formatted display"""
+        try:
+            query = """
+                SELECT DISTINCT 
+                    c.english_name,
+                    c.company_code
+                FROM companies c
+                WHERE c.delete_flag = 0
+                  AND c.english_name IN (
+                    SELECT DISTINCT entity_name FROM unified_supply_view
+                    WHERE entity_name IS NOT NULL
+                    UNION
+                    SELECT DISTINCT entity_name FROM unified_demand_view
+                    WHERE entity_name IS NOT NULL
+                  )
+                ORDER BY c.english_name
+            """
+            
+            with _self.get_connection() as conn:
+                df = pd.read_sql(text(query), conn)
+            
+            logger.info(f"Loaded {len(df)} formatted entities")
+            return df
+            
+        except SQLAlchemyError as e:
+            logger.error(f"Database error getting formatted entities: {e}", exc_info=True)
+            raise DataLoadError(f"Failed to get formatted entities: {str(e)}")
+    
+    @st.cache_data(ttl=CACHE_TTL_REFERENCE)
     def get_products(_self, entity_name: Optional[str] = None) -> pd.DataFrame:
-        """Get list of products"""
+        """Get list of products with package_size"""
         try:
             _self._validate_entity_name(entity_name)
             

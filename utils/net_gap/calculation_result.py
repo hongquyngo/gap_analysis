@@ -1,8 +1,10 @@
 # utils/net_gap/calculation_result.py
 
 """
-GAP Calculation Result Container - Single Source of Truth
-Encapsulates all calculation data to prevent state synchronization issues
+GAP Calculation Result Container - Version 3.2 ENHANCED
+- Added exclusion filter tracking
+- Improved filter hash generation
+- Complete metadata for reproducibility
 """
 
 import pandas as pd
@@ -44,6 +46,7 @@ class GAPCalculationResult:
     """
     Complete GAP calculation result with all associated data
     Single source of truth for the entire calculation
+    Version 3.2: Enhanced with exclusion filter tracking
     """
     gap_df: pd.DataFrame
     metrics: Dict[str, Any]
@@ -60,8 +63,19 @@ class GAPCalculationResult:
         if self.metrics is None:
             raise ValueError("Metrics dictionary is required")
         
+        # Ensure exclusion flags exist in filters
+        if 'exclude_products' not in self.filters_used:
+            self.filters_used['exclude_products'] = False
+        if 'exclude_brands' not in self.filters_used:
+            self.filters_used['exclude_brands'] = False
+        if 'exclude_expired_inventory' not in self.filters_used:
+            self.filters_used['exclude_expired_inventory'] = True
+        
         logger.info(f"GAPCalculationResult created: {len(self.gap_df)} items, "
-                   f"{self.metrics.get('affected_customers', 0)} affected customers")
+                   f"{self.metrics.get('affected_customers', 0)} affected customers, "
+                   f"exclusions: products={self.filters_used.get('exclude_products')}, "
+                   f"brands={self.filters_used.get('exclude_brands')}, "
+                   f"expired={self.filters_used.get('exclude_expired_inventory')}")
     
     def get_shortage_products(self) -> list:
         """Get list of product IDs with shortages"""
@@ -81,20 +95,45 @@ class GAPCalculationResult:
         ].copy()
     
     def get_filter_hash(self) -> str:
-        """Generate hash for filter comparison"""
+        """
+        Generate hash for filter comparison
+        Enhanced: Includes exclusion flags
+        """
+        def safe_str(val):
+            if val is None:
+                return 'None'
+            if isinstance(val, (list, tuple)):
+                return str(sorted(val) if val else [])
+            return str(val)
+        
         key_parts = [
             str(self.filters_used.get('entity')),
-            str(sorted(self.filters_used.get('products', []))),
-            str(sorted(self.filters_used.get('brands', []))),
-            str(sorted(self.filters_used.get('supply_sources', []))),
-            str(sorted(self.filters_used.get('demand_sources', []))),
+            safe_str(self.filters_used.get('products', [])),
+            safe_str(self.filters_used.get('brands', [])),
+            str(self.filters_used.get('exclude_products', False)),
+            str(self.filters_used.get('exclude_brands', False)),
+            str(self.filters_used.get('exclude_expired_inventory', True)),
+            safe_str(self.filters_used.get('supply_sources', [])),
+            safe_str(self.filters_used.get('demand_sources', [])),
             str(self.filters_used.get('include_safety_stock', False)),
             str(self.filters_used.get('group_by', 'product'))
         ]
         return '|'.join(key_parts)
     
+    def get_exclusion_summary(self) -> Dict[str, Any]:
+        """Get summary of exclusion filters applied"""
+        return {
+            'products_excluded': self.filters_used.get('exclude_products', False),
+            'products_count': len(self.filters_used.get('products', [])),
+            'brands_excluded': self.filters_used.get('exclude_brands', False),
+            'brands_count': len(self.filters_used.get('brands', [])),
+            'expired_excluded': self.filters_used.get('exclude_expired_inventory', True)
+        }
+    
     def to_summary_dict(self) -> Dict[str, Any]:
         """Get summary for logging/debugging"""
+        exclusion_summary = self.get_exclusion_summary()
+        
         return {
             'items_count': len(self.gap_df),
             'shortage_items': self.metrics.get('shortage_items', 0),
@@ -107,6 +146,39 @@ class GAPCalculationResult:
                 'products_count': len(self.filters_used.get('products', [])),
                 'brands_count': len(self.filters_used.get('brands', [])),
                 'group_by': self.filters_used.get('group_by'),
-                'safety_stock': self.filters_used.get('include_safety_stock', False)
+                'safety_stock': self.filters_used.get('include_safety_stock', False),
+                'exclusions': exclusion_summary
             }
         }
+    
+    def to_export_metadata(self) -> Dict[str, Any]:
+        """Get metadata for Excel export"""
+        exclusion_summary = self.get_exclusion_summary()
+        
+        metadata = {
+            'Generated': self.timestamp.strftime('%Y-%m-%d %H:%M:%S'),
+            'Total Items': len(self.gap_df),
+            'Shortage Items': self.metrics.get('shortage_items', 0),
+            'Critical Items': self.metrics.get('critical_items', 0),
+            'Coverage Rate': f"{self.metrics.get('overall_coverage', 0):.1f}%",
+            'Affected Customers': self.metrics.get('affected_customers', 0),
+            'At Risk Value': f"${self.metrics.get('at_risk_value_usd', 0):,.2f}",
+            '_separator_1': '',
+            'Filter Configuration': '',
+            'Entity': self.filters_used.get('entity', 'All'),
+            'Group By': self.filters_used.get('group_by', 'product'),
+            'Safety Stock': 'Yes' if self.filters_used.get('include_safety_stock') else 'No',
+            '_separator_2': '',
+            'Exclusion Filters': '',
+            'Products Mode': 'EXCLUDED' if exclusion_summary['products_excluded'] else 'INCLUDED',
+            'Products Count': exclusion_summary['products_count'],
+            'Brands Mode': 'EXCLUDED' if exclusion_summary['brands_excluded'] else 'INCLUDED',
+            'Brands Count': exclusion_summary['brands_count'],
+            'Expired Inventory': 'EXCLUDED' if exclusion_summary['expired_excluded'] else 'INCLUDED',
+            '_separator_3': '',
+            'Data Sources': '',
+            'Supply Sources': ', '.join(self.filters_used.get('supply_sources', [])),
+            'Demand Sources': ', '.join(self.filters_used.get('demand_sources', []))
+        }
+        
+        return metadata

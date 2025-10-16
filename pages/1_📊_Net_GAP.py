@@ -1,11 +1,11 @@
 # pages/1_📊_Net_GAP.py
 
 """
-Net GAP Analysis Page - Version 3.0 REFACTORED
-- Uses GAPCalculationResult (single source of truth)
-- Removed date range and customer filters
-- Fixed Excel export formatting (no more 999 values)
-- Simplified data flow and state management
+Net GAP Analysis Page - Version 3.2 ENHANCED
+- Added exclusion support for products, brands, and expired inventory
+- Fixed customer dialog auto-popup bug
+- Enhanced product and entity display formatting
+- Improved state management and error handling
 """
 
 import streamlit as st
@@ -47,7 +47,7 @@ from utils.net_gap.field_explanations import show_field_explanations, get_field_
 
 # Constants
 MAX_EXPORT_ROWS = 10000
-VERSION = "3.0"
+VERSION = "3.2"
 
 
 def initialize_components():
@@ -98,24 +98,29 @@ def load_and_calculate_gap(
     filter_values: Dict[str, Any]
 ):
     """
-    Load data and calculate GAP, returning GAPCalculationResult
+    Load data and calculate GAP with exclusion support
     
     Returns:
         GAPCalculationResult object
     """
     with st.spinner("🔄 Loading data and calculating GAP..."):
-        # Load supply data (all dates)
+        # Load supply data with exclusions
         supply_df = data_loader.load_supply_data(
             entity_name=filter_values.get('entity'),
             product_ids=filter_values.get('products_tuple'),
-            brands=filter_values.get('brands_tuple')
+            brands=filter_values.get('brands_tuple'),
+            exclude_products=filter_values.get('exclude_products', False),
+            exclude_brands=filter_values.get('exclude_brands', False),
+            exclude_expired=filter_values.get('exclude_expired_inventory', True)
         )
         
-        # Load demand data (all dates, all customers)
+        # Load demand data with exclusions
         demand_df = data_loader.load_demand_data(
             entity_name=filter_values.get('entity'),
             product_ids=filter_values.get('products_tuple'),
-            brands=filter_values.get('brands_tuple')
+            brands=filter_values.get('brands_tuple'),
+            exclude_products=filter_values.get('exclude_products', False),
+            exclude_brands=filter_values.get('exclude_brands', False)
         )
         
         # Load safety stock if included
@@ -137,7 +142,7 @@ def load_and_calculate_gap(
         
         logger.info(f"Data loaded: {len(supply_df)} supply, {len(demand_df)} demand records")
         
-        # Calculate GAP (returns GAPCalculationResult)
+        # Calculate GAP
         result = calculator.calculate_net_gap(
             supply_df=supply_df,
             demand_df=demand_df,
@@ -155,36 +160,25 @@ def load_and_calculate_gap(
 
 
 def format_value_for_export(value: Any, field_name: str) -> Any:
-    """
-    Format values for Excel export (fix 999 issue)
-    
-    Args:
-        value: Value to format
-        field_name: Name of the field
-        
-    Returns:
-        Properly formatted value for Excel
-    """
+    """Format values for Excel export (fix 999 issue)"""
     if pd.isna(value) or value is None:
         return None
     
-    # Handle special cases
     if field_name == 'safety_coverage':
         if value >= 999:
-            return None  # Excel will show as blank
+            return None
         return round(value, 2)
     
     if field_name == 'days_of_supply':
         if value >= 999:
-            return None  # Excel will show as blank
+            return None
         return round(value, 1)
     
     if field_name == 'coverage_ratio':
         if value > 10:
-            return None  # Excess coverage
+            return None
         return round(value, 2)
     
-    # Numeric fields
     if isinstance(value, (int, float)):
         return round(value, 2) if isinstance(value, float) else value
     
@@ -197,19 +191,14 @@ def export_to_excel(
     filters: Dict, 
     include_safety: bool = False
 ) -> bytes:
-    """
-    Export GAP analysis to Excel with proper formatting
-    FIXED: Handles safety_coverage and days_of_supply = 999
-    """
+    """Export GAP analysis to Excel with proper formatting"""
     output = io.BytesIO()
     
-    # Check data size
     export_df = gap_df.copy()
     if len(export_df) > MAX_EXPORT_ROWS:
         st.warning(f"⚠️ Large dataset. Export limited to {MAX_EXPORT_ROWS} rows.")
         export_df = export_df.head(MAX_EXPORT_ROWS)
     
-    # Prepare export DataFrame with proper formatting
     export_columns = [
         'product_id', 'product_name', 'pt_code', 'brand',
         'total_supply', 'total_demand', 'net_gap',
@@ -217,22 +206,18 @@ def export_to_excel(
         'priority', 'suggested_action'
     ]
     
-    # Add safety stock columns if included
     if include_safety:
         export_columns.extend([
             'safety_stock_qty', 'available_supply', 
             'safety_coverage', 'days_of_supply', 'below_reorder'
         ])
     
-    # Add financial columns
     if 'at_risk_value_usd' in export_df.columns:
         export_columns.extend(['at_risk_value_usd', 'gap_value_usd'])
     
-    # Filter to available columns
     export_columns = [col for col in export_columns if col in export_df.columns]
     export_df = export_df[export_columns].copy()
     
-    # Format special fields
     for col in export_df.columns:
         if col in ['safety_coverage', 'days_of_supply', 'coverage_ratio']:
             export_df[col] = export_df[col].apply(
@@ -240,10 +225,19 @@ def export_to_excel(
             )
     
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # Summary sheet
+        # Summary sheet with exclusion info
         summary_rows = [
             ('Report Generated', datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
             ('', ''),
+            ('FILTERS APPLIED', ''),
+            ('Entity', filters.get('entity', 'All')),
+            ('Products', f"{len(filters.get('products', []))} selected" if filters.get('products') else 'All'),
+            ('Products Mode', 'EXCLUDED' if filters.get('exclude_products') else 'INCLUDED'),
+            ('Brands', ', '.join(filters.get('brands', [])) or 'All'),
+            ('Brands Mode', 'EXCLUDED' if filters.get('exclude_brands') else 'INCLUDED'),
+            ('Expired Inventory', 'EXCLUDED' if filters.get('exclude_expired_inventory') else 'INCLUDED'),
+            ('', ''),
+            ('METRICS', ''),
             ('Total Products', metrics['total_products']),
             ('Shortage Items', metrics['shortage_items']),
             ('Critical Items', metrics['critical_items']),
@@ -259,11 +253,10 @@ def export_to_excel(
             ('Affected Customers', metrics['affected_customers']),
         ]
         
-        # Add safety stock metrics if included
         if include_safety:
             summary_rows.extend([
                 ('', ''),
-                ('Safety Stock Analysis', ''),
+                ('SAFETY STOCK ANALYSIS', ''),
                 ('Below Safety Count', metrics.get('below_safety_count', 0)),
                 ('At Reorder Count', metrics.get('at_reorder_count', 0)),
                 ('Safety Stock Value', f"${metrics.get('safety_stock_value', 0):,.2f}"),
@@ -277,32 +270,19 @@ def export_to_excel(
         # Detail sheet
         export_df.to_excel(writer, sheet_name='GAP Details', index=False)
         
-        # Filters sheet
-        filters_data = pd.DataFrame({
-            'Filter': [
-                'Entity', 'Supply Sources', 'Demand Sources', 
-                'Products', 'Brands', 'Group By', 'Safety Stock'
-            ],
-            'Value': [
-                filters.get('entity', 'All'),
-                ', '.join(filters.get('supply_sources', [])),
-                ', '.join(filters.get('demand_sources', [])),
-                f"{len(filters.get('products', []))} selected" if filters.get('products') else 'All',
-                ', '.join(filters.get('brands', [])) or 'All',
-                filters.get('group_by', 'product'),
-                'Yes' if filters.get('include_safety_stock', False) else 'No'
-            ]
-        })
-        filters_data.to_excel(writer, sheet_name='Applied Filters', index=False)
-        
         # Notes sheet
         notes_data = pd.DataFrame({
             'Note': [
-                'Special Values',
+                'EXCLUSION FILTERS',
+                f"- Products: {filters.get('products', []) or 'None'} ({'EXCLUDED' if filters.get('exclude_products') else 'INCLUDED'})",
+                f"- Brands: {filters.get('brands', []) or 'None'} ({'EXCLUDED' if filters.get('exclude_brands') else 'INCLUDED'})",
+                f"- Expired Inventory: {'EXCLUDED' if filters.get('exclude_expired_inventory') else 'INCLUDED'}",
+                '',
+                'SPECIAL VALUES',
                 '- Blank cells in Safety Coverage or Days of Supply indicate values > 999',
                 '- Blank cells in Coverage Ratio indicate excessive surplus (>10x demand)',
                 '',
-                'Status Codes',
+                'STATUS CODES',
                 '- CRITICAL_BREACH: Inventory below 50% of safety stock',
                 '- BELOW_SAFETY: Inventory below safety stock level',
                 '- SEVERE_SHORTAGE: Coverage < 50%',
@@ -315,7 +295,7 @@ def export_to_excel(
         notes_data.to_excel(writer, sheet_name='Notes', index=False)
     
     output.seek(0)
-    logger.info("Excel export generated successfully with proper formatting")
+    logger.info("Excel export generated successfully with exclusion info")
     return output.getvalue()
 
 
@@ -326,10 +306,10 @@ def format_coverage_value(row: pd.Series) -> str:
     supply = row.get('total_supply', 0)
     
     if pd.isna(ratio):
-        return "—"
+        return "–"
     
     if demand == 0:
-        return "No Demand" if supply > 0 else "—"
+        return "No Demand" if supply > 0 else "–"
     
     if supply == 0:
         return "0%"
@@ -354,7 +334,6 @@ def prepare_display_dataframe(
     """Prepare dataframe for display with formatting"""
     display_df = gap_df.copy()
     
-    # Status mapping
     status_display = {
         'CRITICAL_BREACH': '🚨 Critical Breach',
         'BELOW_SAFETY': '⚠️ Below Safety',
@@ -386,7 +365,6 @@ def prepare_display_dataframe(
             lambda x: formatter.format_number(x, show_sign=True)
         )
     
-    # Coverage formatting
     if 'coverage_ratio' in display_df.columns:
         display_df['Coverage'] = display_df.apply(format_coverage_value, axis=1)
     
@@ -421,7 +399,6 @@ def prepare_display_dataframe(
                 lambda x: '⚠️ Yes' if x else '✅ No'
             )
     
-    # Action
     if 'suggested_action' in display_df.columns:
         display_df['Action'] = display_df['suggested_action']
     
@@ -440,32 +417,26 @@ def prepare_display_dataframe(
     col_config = session_manager.get_table_columns_config()
     columns = []
     
-    # Basic Info
     if col_config['basic']:
         if filter_values.get('group_by') == 'product':
             columns.extend(['pt_code', 'product_name', 'brand'])
         else:
             columns.extend(['brand'])
     
-    # Supply & Demand
     if col_config['supply']:
         columns.extend(['Supply', 'Demand', 'Net GAP'])
     
-    # Safety Stock
     if col_config['safety'] and include_safety:
         if 'Safety Stock' in display_df.columns:
             columns.extend(['Safety Stock', 'Available', 'True GAP'])
     
-    # Analysis
     if col_config['analysis']:
         columns.extend(['Coverage', 'GAP %', 'Status', 'Action'])
     
-    # Financial
     if col_config['financial']:
         financial_cols = ['At Risk Value', 'GAP Value']
         columns.extend([c for c in financial_cols if c in display_df.columns])
     
-    # Details
     if col_config['details']:
         detail_cols = [
             'supply_inventory', 'supply_can_pending', 
@@ -474,7 +445,6 @@ def prepare_display_dataframe(
         ]
         columns.extend([c for c in detail_cols if c in display_df.columns])
     
-    # Filter to available columns
     columns = [col for col in columns if col in display_df.columns]
     
     return display_df[columns] if columns else display_df
@@ -503,7 +473,6 @@ def display_paginated_table(
     
     page_df = df.iloc[start_idx:end_idx]
     
-    # Add column tooltips
     column_config = {}
     for col in page_df.columns:
         tooltip = get_field_tooltip(col)
@@ -521,12 +490,11 @@ def display_paginated_table(
         column_config=column_config
     )
     
-    # Pagination controls
     if total_pages > 1:
         col1, col2, col3, col4, col5 = st.columns([1, 1, 3, 1, 1])
         
         with col1:
-            if st.button("⏮️", disabled=(page == 1), use_container_width=True, key=f"{key_prefix}_first"):
+            if st.button("⮈", disabled=(page == 1), use_container_width=True, key=f"{key_prefix}_first"):
                 session_manager.set_current_page(1, total_pages)
                 st.rerun()
         
@@ -550,7 +518,7 @@ def display_paginated_table(
                 st.rerun()
         
         with col5:
-            if st.button("⏭️", disabled=(page == total_pages), use_container_width=True, key=f"{key_prefix}_last"):
+            if st.button("⭆", disabled=(page == total_pages), use_container_width=True, key=f"{key_prefix}_last"):
                 session_manager.set_current_page(total_pages, total_pages)
                 st.rerun()
 
@@ -586,12 +554,10 @@ def display_data_table(
     
     st.caption(f"ℹ️ {filter_options[quick_filter]['help']}")
     
-    # Reset pagination when filter changes
     if st.session_state.get('_last_quick_filter') != quick_filter:
         session_manager.reset_pagination()
         st.session_state['_last_quick_filter'] = quick_filter
     
-    # Apply quick filter
     original_count = len(gap_df)
     if quick_filter != 'all':
         gap_df = filters.apply_quick_filter(gap_df, quick_filter, include_safety)
@@ -641,7 +607,6 @@ def display_data_table(
         
         session_manager.set_table_columns_config(new_config)
         
-        # Presets
         st.markdown("**Quick presets:**")
         preset_cols = st.columns(4)
         
@@ -690,7 +655,7 @@ def display_data_table(
     with col3:
         if st.button("📥 Export to Excel", type="primary", use_container_width=True):
             excel_data = export_to_excel(
-                result.gap_df,  # Use original gap_df for export
+                result.gap_df,
                 metrics, 
                 filter_values, 
                 include_safety
@@ -707,7 +672,6 @@ def display_data_table(
     
     st.caption(f"Showing {len(display_df.columns)} columns | {len(display_df)} items found")
     
-    # Display table
     display_paginated_table(display_df, items_per_page, session_manager, key_prefix="main")
 
 
@@ -735,7 +699,7 @@ def render_action_buttons(session_manager, filters) -> Tuple[bool, bool]:
     with col3:
         active_count = filters.count_active_filters()
         if active_count > 0:
-            st.info(f"✔ {active_count} filters active")
+            st.info(f"✓ {active_count} filters active")
     
     return calculate_clicked, force_recalc
 
@@ -754,7 +718,7 @@ def main():
     
     # Page header
     st.title("📊 Net GAP Analysis")
-    st.markdown("Comprehensive supply-demand analysis with safety stock management")
+    st.markdown("Comprehensive supply-demand analysis with exclusion filters and safety stock management")
     
     # Sidebar
     st.sidebar.markdown(f"👤 **User:** {auth_manager.get_user_display_name()}")
@@ -762,7 +726,7 @@ def main():
         auth_manager.logout()
         st.rerun()
     
-    # Show customer dialog if needed
+    # FIXED: Check dialog state properly
     if session_manager.show_customer_dialog():
         result = session_manager.get_gap_result()
         if result and result.customer_impact:
@@ -807,19 +771,33 @@ def main():
             result = session_manager.get_gap_result()
             logger.info(f"Using cached result: {len(result.gap_df)} items")
         
-        # Display configuration
+        # Display configuration with exclusion info
         include_safety = filter_values.get('include_safety_stock', False)
-        config_text = f"""
-        **Analysis Configuration:**
-        - Supply: {', '.join(filter_values.get('supply_sources', []))}
-        - Demand: {', '.join(filter_values.get('demand_sources', []))}
-        """
+        
+        config_parts = [
+            "**Analysis Configuration:**",
+            f"- Supply: {', '.join(filter_values.get('supply_sources', []))}",
+            f"- Demand: {', '.join(filter_values.get('demand_sources', []))}"
+        ]
+        
         if include_safety:
-            config_text += "\n- ✅ **Safety stock requirements included**"
+            config_parts.append("- ✅ **Safety stock requirements included**")
         
-        config_text += f"\n- {filters.get_filter_summary(filter_values)}"
+        # Add exclusion info
+        exclusions = []
+        if filter_values.get('exclude_products') and filter_values.get('products'):
+            exclusions.append(f"{len(filter_values['products'])} products excluded")
+        if filter_values.get('exclude_brands') and filter_values.get('brands'):
+            exclusions.append(f"{len(filter_values['brands'])} brands excluded")
+        if filter_values.get('exclude_expired_inventory'):
+            exclusions.append("expired inventory excluded")
         
-        st.info(config_text)
+        if exclusions:
+            config_parts.append(f"- 🚫 **Exclusions:** {', '.join(exclusions)}")
+        
+        config_parts.append(f"- {filters.get_filter_summary(filter_values)}")
+        
+        st.info("\n".join(config_parts))
         
         # KPI cards
         st.subheader("📈 Key Metrics")

@@ -1,10 +1,11 @@
 # utils/net_gap/filters.py
 
 """
-Filter Components for GAP Analysis - Version 3.1 REDESIGNED
-- Compact Card Layout for better UX
-- Organized sections: Scope, Data Sources, Analysis
-- Improved visual hierarchy and space efficiency
+Filter Components for GAP Analysis - Version 3.2 ENHANCED
+- Added exclusion checkboxes for products and brands
+- Added exclude expired inventory option
+- Improved product and entity display formatting
+- Better UX with compact card layout
 """
 
 import streamlit as st
@@ -54,7 +55,7 @@ DEMAND_SOURCES = {
 
 
 class GAPFilters:
-    """Manages filter UI for GAP analysis with Compact Card Layout"""
+    """Manages filter UI for GAP analysis with exclusion support"""
     
     def __init__(self, data_loader):
         self.data_loader = data_loader
@@ -72,12 +73,11 @@ class GAPFilters:
             self._safety_stock_available = False
     
     def render_filters(self) -> Dict[str, Any]:
-        """Render all filter components with Compact Card Layout"""
+        """Render all filter components with exclusion support"""
         filters = {}
         
         # Main configuration card
         with st.expander("🔧 **Data Configuration**", expanded=True):
-            # Apply custom CSS for better styling
             self._apply_custom_css()
             
             # Section 1: Scope
@@ -89,7 +89,9 @@ class GAPFilters:
             # Section 3: Analysis Options
             self._render_analysis_section(filters)
             
-            # Action buttons at the bottom of the card
+            # Section 4: Exclusions
+            self._render_exclusion_section(filters)
+            
             st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
         
         # Validate and convert filters
@@ -118,6 +120,13 @@ class GAPFilters:
                 padding: 12px;
                 margin-bottom: 12px;
             }
+            .exclusion-box {
+                background: #fef2f2;
+                border: 1px solid #fecaca;
+                border-radius: 8px;
+                padding: 12px;
+                margin-bottom: 12px;
+            }
             .info-badge {
                 display: inline-block;
                 padding: 2px 8px;
@@ -127,17 +136,12 @@ class GAPFilters:
                 font-size: 12px;
                 margin-left: 8px;
             }
-            .source-grid {
-                display: grid;
-                grid-template-columns: 1fr 1fr;
-                gap: 10px;
-            }
             </style>
         """, unsafe_allow_html=True)
     
     def _render_scope_section(self, filters: Dict[str, Any]) -> None:
         """Render Scope section with entity, products, and brands"""
-        st.markdown("<div class='section-header'>📍 Scope</div>", unsafe_allow_html=True)
+        st.markdown("<div class='section-header'>🔍 Scope</div>", unsafe_allow_html=True)
         
         with st.container():
             col1, col2, col3 = st.columns([2, 2, 2])
@@ -146,13 +150,17 @@ class GAPFilters:
                 filters['entity'] = self._render_entity_selector()
             
             with col2:
-                filters['products'] = self._render_product_selector_compact(filters.get('entity'))
+                product_data = self._render_product_selector_enhanced(filters.get('entity'))
+                filters['products'] = product_data['selected']
+                filters['exclude_products'] = product_data['exclude']
             
             with col3:
-                filters['brands'] = self._render_brand_selector_compact(filters.get('entity'))
+                brand_data = self._render_brand_selector_enhanced(filters.get('entity'))
+                filters['brands'] = brand_data['selected']
+                filters['exclude_brands'] = brand_data['exclude']
     
     def _render_data_sources_section(self, filters: Dict[str, Any]) -> None:
-        """Render Data Sources section with supply, demand, and safety options"""
+        """Render Data Sources section"""
         st.markdown("<div class='section-header'>📊 Data Sources</div>", unsafe_allow_html=True)
         
         col1, col2, col3 = st.columns([2.5, 2.5, 2])
@@ -167,7 +175,7 @@ class GAPFilters:
             self._render_safety_stock_toggle(filters)
     
     def _render_analysis_section(self, filters: Dict[str, Any]) -> None:
-        """Render Analysis section with grouping and date range info"""
+        """Render Analysis section"""
         st.markdown("<div class='section-header'>📈 Analysis</div>", unsafe_allow_html=True)
         
         col1, col2 = st.columns([1, 2])
@@ -178,61 +186,124 @@ class GAPFilters:
         with col2:
             self._render_date_range_info()
     
+    def _render_exclusion_section(self, filters: Dict[str, Any]) -> None:
+        """Render Exclusion Options section"""
+        st.markdown("<div class='section-header'>🚫 Exclusions</div>", unsafe_allow_html=True)
+        
+        with st.container():
+            st.markdown("<div class='exclusion-box'>", unsafe_allow_html=True)
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                current_filters = self.session_manager.get_filters()
+                filters['exclude_expired_inventory'] = st.checkbox(
+                    "🗑️ Exclude Expired Inventory",
+                    value=current_filters.get('exclude_expired_inventory', True),
+                    key="exclude_expired_checkbox",
+                    help="Remove expired items from supply calculation"
+                )
+                
+                if filters['exclude_expired_inventory']:
+                    st.caption("✅ Expired items will be excluded")
+                else:
+                    st.caption("⚠️ Including expired items")
+            
+            with col2:
+                st.info(
+                    "💡 **Tip**: Use product/brand exclusion checkboxes above to filter out specific items",
+                    icon="💡"
+                )
+            
+            st.markdown("</div>", unsafe_allow_html=True)
+    
     def _render_entity_selector(self) -> Optional[str]:
-        """Render compact entity selector"""
+        """Render entity selector with formatted display"""
         try:
-            entities = self.data_loader.get_entities()
+            entities_df = self.data_loader.get_entities_formatted()
         except DataLoadError as e:
             st.error(f"Failed to load entities: {str(e)}")
             return None
         
-        if not entities:
+        if entities_df.empty:
             st.warning("No entities available")
             return None
         
-        entity_options = ["All Entities"] + entities
         current_filters = self.session_manager.get_filters()
         current_value = current_filters.get('entity')
         
-        if current_value and current_value in entities:
-            default_index = entities.index(current_value) + 1
+        # Create display mapping: company_code | english_name
+        entity_display = {}
+        entity_map = {}
+        
+        for _, row in entities_df.iterrows():
+            display_text = f"{row['company_code']} | {row['english_name']}"
+            entity_display[row['english_name']] = display_text
+            entity_map[display_text] = row['english_name']
+        
+        display_options = ["All Entities"] + list(entity_display.values())
+        
+        # Set default index
+        if current_value and current_value in entity_display:
+            default_index = display_options.index(entity_display[current_value])
         else:
             default_index = 0
         
-        selected = st.selectbox(
+        selected_display = st.selectbox(
             "Entity",
-            options=entity_options,
+            options=display_options,
             index=default_index,
             key="entity_select",
             help="Select specific entity or analyze all"
         )
         
-        return None if selected == "All Entities" else selected
+        if selected_display == "All Entities":
+            return None
+        
+        return entity_map.get(selected_display)
     
-    def _render_product_selector_compact(self, entity: Optional[str]) -> List[int]:
-        """Render compact product selector with count"""
+    def _render_product_selector_enhanced(self, entity: Optional[str]) -> Dict[str, Any]:
+        """Render product selector with exclusion checkbox and enhanced formatting"""
         try:
             products_df = self.data_loader.get_products(entity)
         except (DataLoadError, ValidationError) as e:
             st.error(f"Failed to load products: {str(e)}")
-            return []
+            return {'selected': [], 'exclude': False}
         
         if products_df.empty:
             st.info("No products available")
-            return []
+            return {'selected': [], 'exclude': False}
         
         current_filters = self.session_manager.get_filters()
         selected_products = current_filters.get('products', [])
+        exclude_mode = current_filters.get('exclude_products', False)
+        
         valid_selected = [p for p in selected_products if p in products_df['product_id'].tolist()]
         
-        # Create display mapping
+        # Format display: pt_code | name | package_size (brand)
         products_df['display'] = products_df.apply(
-            lambda x: f"{x['pt_code']} - {x['product_name'][:20]}...", axis=1
+            lambda x: self._format_product_display(
+                x['pt_code'], 
+                x['product_name'], 
+                x.get('package_size', ''),
+                x['brand']
+            ), 
+            axis=1
         )
         product_map = dict(zip(products_df['product_id'], products_df['display']))
         
+        # Exclusion checkbox
+        exclude = st.checkbox(
+            "🚫 Exclude selected products",
+            value=exclude_mode,
+            key="exclude_products_checkbox",
+            help="When checked, selected products will be excluded from analysis"
+        )
+        
+        # Product multiselect
+        label = "Products to Exclude" if exclude else "Products to Include"
         selected = st.multiselect(
-            f"Products",
+            label,
             options=products_df['product_id'].tolist(),
             default=valid_selected,
             format_func=lambda x: product_map.get(x, f"ID: {x}"),
@@ -240,38 +311,78 @@ class GAPFilters:
             key="products_multiselect"
         )
         
+        # Status caption
         if selected:
-            st.caption(f"✓ {len(selected)} selected")
+            mode_text = "excluded" if exclude else "included"
+            st.caption(f"{'🚫' if exclude else '✓'} {len(selected)} products {mode_text}")
         
-        return selected
+        return {'selected': selected, 'exclude': exclude}
     
-    def _render_brand_selector_compact(self, entity: Optional[str]) -> List[str]:
-        """Render compact brand selector"""
+    def _render_brand_selector_enhanced(self, entity: Optional[str]) -> Dict[str, Any]:
+        """Render brand selector with exclusion checkbox"""
         try:
             brands = self.data_loader.get_brands(entity)
         except (DataLoadError, ValidationError) as e:
             st.error(f"Failed to load brands: {str(e)}")
-            return []
+            return {'selected': [], 'exclude': False}
         
         if not brands:
-            return []
+            return {'selected': [], 'exclude': False}
         
         current_filters = self.session_manager.get_filters()
         selected_brands = current_filters.get('brands', [])
+        exclude_mode = current_filters.get('exclude_brands', False)
+        
         valid_selected = [b for b in selected_brands if b in brands]
         
+        # Exclusion checkbox
+        exclude = st.checkbox(
+            "🚫 Exclude selected brands",
+            value=exclude_mode,
+            key="exclude_brands_checkbox",
+            help="When checked, selected brands will be excluded from analysis"
+        )
+        
+        # Brand multiselect
+        label = "Brands to Exclude" if exclude else "Brands to Include"
         selected = st.multiselect(
-            "Brands",
+            label,
             options=brands,
             default=valid_selected,
             placeholder=f"All ({len(brands)} available)",
             key="brands_multiselect"
         )
         
+        # Status caption
         if selected:
-            st.caption(f"✓ {len(selected)} selected")
+            mode_text = "excluded" if exclude else "included"
+            st.caption(f"{'🚫' if exclude else '✓'} {len(selected)} brands {mode_text}")
         
-        return selected
+        return {'selected': selected, 'exclude': exclude}
+    
+    def _format_product_display(
+        self, 
+        pt_code: str, 
+        name: str, 
+        package_size: str, 
+        brand: str,
+        max_name_length: int = 30
+    ) -> str:
+        """Format product display: pt_code | name | package_size (brand)"""
+        # Truncate name if too long
+        display_name = name[:max_name_length] + "..." if len(name) > max_name_length else name
+        
+        # Build display string
+        parts = [pt_code, display_name]
+        
+        # Add package size if available
+        if package_size and str(package_size).strip():
+            parts.append(package_size)
+        
+        # Add brand in parentheses
+        display = " | ".join(parts) + f" ({brand})"
+        
+        return display
     
     def _render_supply_sources_compact(self, filters: Dict[str, Any]) -> None:
         """Render supply sources as compact checkbox group"""
@@ -281,7 +392,6 @@ class GAPFilters:
         current_filters = self.session_manager.get_filters()
         default_selected = current_filters.get('supply_sources', list(SUPPLY_SOURCES.keys()))
         
-        # Create 2x2 grid
         col1, col2 = st.columns(2)
         cols = [col1, col2, col1, col2]
         
@@ -297,7 +407,6 @@ class GAPFilters:
         
         filters['supply_sources'] = selected if selected else ['INVENTORY']
         
-        # Show summary
         if len(selected) == len(SUPPLY_SOURCES):
             st.caption("✅ All sources included")
         elif selected:
@@ -322,7 +431,6 @@ class GAPFilters:
         
         filters['demand_sources'] = selected if selected else ['OC_PENDING']
         
-        # Show summary
         if len(selected) == len(DEMAND_SOURCES):
             st.caption("✅ All sources included")
         elif selected:
@@ -396,6 +504,11 @@ class GAPFilters:
         filters_converted['products'] = filters.get('products', [])
         filters_converted['brands'] = filters.get('brands', [])
         
+        # Ensure exclusion flags
+        filters_converted['exclude_products'] = filters.get('exclude_products', False)
+        filters_converted['exclude_brands'] = filters.get('exclude_brands', False)
+        filters_converted['exclude_expired_inventory'] = filters.get('exclude_expired_inventory', True)
+        
         return filters_converted
     
     def apply_quick_filter(
@@ -439,7 +552,7 @@ class GAPFilters:
         return gap_df
     
     def get_filter_summary(self, filters: Dict[str, Any]) -> str:
-        """Generate concise filter summary"""
+        """Generate concise filter summary with exclusions"""
         summary_parts = []
         
         # Entity
@@ -448,11 +561,18 @@ class GAPFilters:
         else:
             summary_parts.append("All Entities")
         
-        # Products and Brands count
+        # Products and Brands with exclusion indicators
         if filters.get('products'):
-            summary_parts.append(f"{len(filters['products'])} products")
+            mode = "excluded" if filters.get('exclude_products') else "selected"
+            summary_parts.append(f"{len(filters['products'])} products {mode}")
+        
         if filters.get('brands'):
-            summary_parts.append(f"{len(filters['brands'])} brands")
+            mode = "excluded" if filters.get('exclude_brands') else "selected"
+            summary_parts.append(f"{len(filters['brands'])} brands {mode}")
+        
+        # Expired inventory
+        if filters.get('exclude_expired_inventory'):
+            summary_parts.append("No expired")
         
         # Sources summary
         supply_count = len(filters.get('supply_sources', []))
@@ -477,12 +597,17 @@ class GAPFilters:
         count = 0
         defaults = self._get_default_filters()
         
-        # Check each filter against defaults
         if filters.get('entity') != defaults['entity']:
             count += 1
         if filters.get('products', []) != defaults['products']:
             count += 1
         if filters.get('brands', []) != defaults['brands']:
+            count += 1
+        if filters.get('exclude_products', False):
+            count += 1
+        if filters.get('exclude_brands', False):
+            count += 1
+        if filters.get('exclude_expired_inventory', True) != defaults['exclude_expired_inventory']:
             count += 1
         if set(filters.get('supply_sources', [])) != set(defaults['supply_sources']):
             count += 1
@@ -501,45 +626,11 @@ class GAPFilters:
             'entity': None,
             'products': [],
             'brands': [],
+            'exclude_products': False,
+            'exclude_brands': False,
+            'exclude_expired_inventory': True,
             'group_by': 'product',
             'supply_sources': ['INVENTORY', 'CAN_PENDING', 'WAREHOUSE_TRANSFER', 'PURCHASE_ORDER'],
             'demand_sources': ['OC_PENDING'],
             'include_safety_stock': True
         }
-
-
-def render_action_buttons(session_manager, filters) -> Tuple[bool, bool]:
-    """Render action buttons with improved layout"""
-    col1, col2, col3, col4 = st.columns([1, 1, 1, 2])
-    
-    force_recalc = False
-    
-    with col1:
-        if st.button("🔄 Reset", use_container_width=True, help="Reset all filters to defaults"):
-            session_manager.reset_filters()
-            session_manager.clear_gap_calculation()
-            st.rerun()
-    
-    with col2:
-        if st.button("🗑️ Clear", use_container_width=True, help="Clear all selections"):
-            session_manager.reset_filters()
-            st.rerun()
-    
-    with col3:
-        active_count = filters.count_active_filters()
-        if active_count > 0:
-            st.info(f"✓ {active_count} active")
-        else:
-            st.info("Default config")
-    
-    with col4:
-        calculate_clicked = st.button(
-            f"📊 Calculate GAP →",
-            type="primary",
-            use_container_width=True,
-            help="Run GAP analysis with current configuration"
-        )
-        if calculate_clicked:
-            force_recalc = True
-    
-    return calculate_clicked, force_recalc
