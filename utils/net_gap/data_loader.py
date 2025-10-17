@@ -1,8 +1,9 @@
 # utils/net_gap/data_loader.py
 
 """
-Data Loader for GAP Analysis - Version 3.2 ENHANCED
-- Added exclusion support for products and brands
+Data Loader for GAP Analysis - Version 3.3 ENHANCED
+- Added entity exclusion support
+- Enhanced exclusion support for products and brands
 - Added exclude expired inventory option
 - Enhanced entity display with company_code
 - Enhanced product display with package_size
@@ -55,7 +56,7 @@ class DatabaseConnectionError(DataLoadError):
 
 
 class GAPDataLoader:
-    """Handles all data loading operations for GAP analysis with exclusion support"""
+    """Handles all data loading operations for GAP analysis with full exclusion support"""
     
     def __init__(self):
         self._engine = None
@@ -273,10 +274,11 @@ class GAPDataLoader:
     def load_safety_stock_data(
         _self,
         entity_name: Optional[str] = None,
+        exclude_entity: bool = False,
         product_ids: Optional[Tuple[int, ...]] = None,
         include_customer_specific: bool = True
     ) -> pd.DataFrame:
-        """Load safety stock requirements"""
+        """Load safety stock requirements with entity exclusion support"""
         try:
             _self._validate_entity_name(entity_name)
             if product_ids:
@@ -304,8 +306,12 @@ class GAPDataLoader:
             
             params = {}
             
+            # Entity filter with exclusion support
             if entity_id:
-                query_parts.append("AND entity_id = :entity_id")
+                if exclude_entity:
+                    query_parts.append("AND entity_id != :entity_id")
+                else:
+                    query_parts.append("AND entity_id = :entity_id")
                 params['entity_id'] = entity_id
             
             if product_ids:
@@ -368,6 +374,7 @@ class GAPDataLoader:
     def load_supply_data(
         _self,
         entity_name: Optional[str] = None,
+        exclude_entity: bool = False,
         product_ids: Optional[Tuple[int, ...]] = None,
         brands: Optional[Tuple[str, ...]] = None,
         exclude_products: bool = False,
@@ -375,10 +382,11 @@ class GAPDataLoader:
         exclude_expired: bool = True
     ) -> pd.DataFrame:
         """
-        Load supply data with exclusion support
+        Load supply data with full exclusion support
         
         Args:
-            entity_name: Filter by entity
+            entity_name: Entity name to include/exclude
+            exclude_entity: If True, exclude specified entity
             product_ids: Product IDs to include/exclude
             brands: Brands to include/exclude
             exclude_products: If True, exclude specified products
@@ -393,7 +401,7 @@ class GAPDataLoader:
                 _self._validate_list_input(list(brands), "brands", MAX_BRANDS)
             
             query, params = _self._build_supply_query(
-                entity_name, product_ids, brands, 
+                entity_name, exclude_entity, product_ids, brands, 
                 exclude_products, exclude_brands, exclude_expired
             )
             
@@ -402,7 +410,7 @@ class GAPDataLoader:
             
             df = _self._process_supply_dataframe(df)
             
-            logger.info(f"Loaded {len(df)} supply records (exclude_expired={exclude_expired})")
+            logger.info(f"Loaded {len(df)} supply records")
             return df
             
         except ValidationError:
@@ -418,16 +426,18 @@ class GAPDataLoader:
     def load_demand_data(
         _self,
         entity_name: Optional[str] = None,
+        exclude_entity: bool = False,
         product_ids: Optional[Tuple[int, ...]] = None,
         brands: Optional[Tuple[str, ...]] = None,
         exclude_products: bool = False,
         exclude_brands: bool = False
     ) -> pd.DataFrame:
         """
-        Load demand data with exclusion support
+        Load demand data with full exclusion support
         
         Args:
-            entity_name: Filter by entity
+            entity_name: Entity name to include/exclude
+            exclude_entity: If True, exclude specified entity
             product_ids: Product IDs to include/exclude
             brands: Brands to include/exclude
             exclude_products: If True, exclude specified products
@@ -441,7 +451,7 @@ class GAPDataLoader:
                 _self._validate_list_input(list(brands), "brands", MAX_BRANDS)
             
             query, params = _self._build_demand_query(
-                entity_name, product_ids, brands,
+                entity_name, exclude_entity, product_ids, brands,
                 exclude_products, exclude_brands
             )
             
@@ -465,13 +475,14 @@ class GAPDataLoader:
     def _build_supply_query(
         self,
         entity_name: Optional[str],
+        exclude_entity: bool,
         product_ids: Optional[Tuple[int, ...]],
         brands: Optional[Tuple[str, ...]],
         exclude_products: bool,
         exclude_brands: bool,
         exclude_expired: bool
     ) -> Tuple[str, Dict[str, Any]]:
-        """Build supply query with exclusion support"""
+        """Build supply query with full exclusion support"""
         
         query_parts = ["""
             SELECT 
@@ -492,9 +503,12 @@ class GAPDataLoader:
         
         params = {}
         
-        # Entity filter
+        # Entity filter with exclusion support
         if entity_name:
-            query_parts.append("AND entity_name = :entity_name")
+            if exclude_entity:
+                query_parts.append("AND entity_name != :entity_name")
+            else:
+                query_parts.append("AND entity_name = :entity_name")
             params['entity_name'] = entity_name
         
         # Product filter with exclusion support
@@ -536,12 +550,13 @@ class GAPDataLoader:
     def _build_demand_query(
         self,
         entity_name: Optional[str],
+        exclude_entity: bool,
         product_ids: Optional[Tuple[int, ...]],
         brands: Optional[Tuple[str, ...]],
         exclude_products: bool,
         exclude_brands: bool
     ) -> Tuple[str, Dict[str, Any]]:
-        """Build demand query with exclusion support"""
+        """Build demand query with full exclusion support"""
         
         query_parts = ["""
             SELECT 
@@ -562,9 +577,12 @@ class GAPDataLoader:
         
         params = {}
         
-        # Entity filter
+        # Entity filter with exclusion support
         if entity_name:
-            query_parts.append("AND entity_name = :entity_name")
+            if exclude_entity:
+                query_parts.append("AND entity_name != :entity_name")
+            else:
+                query_parts.append("AND entity_name = :entity_name")
             params['entity_name'] = entity_name
         
         # Product filter with exclusion support

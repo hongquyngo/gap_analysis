@@ -1,11 +1,11 @@
 # utils/net_gap/filters.py
 
 """
-Filter Components for GAP Analysis - Version 3.2 ENHANCED
-- Added exclusion checkboxes for products and brands
-- Added exclude expired inventory option
-- Improved product and entity display formatting
-- Better UX with compact card layout
+Filter Components for GAP Analysis - Version 3.3 IMPROVED LAYOUT
+- Cleaner, more compact filter layout
+- Entity exclusion support added
+- Expired inventory moved to Scope section
+- Simplified labels and better visual hierarchy
 """
 
 import streamlit as st
@@ -55,7 +55,7 @@ DEMAND_SOURCES = {
 
 
 class GAPFilters:
-    """Manages filter UI for GAP analysis with exclusion support"""
+    """Manages filter UI for GAP analysis with improved layout"""
     
     def __init__(self, data_loader):
         self.data_loader = data_loader
@@ -73,14 +73,14 @@ class GAPFilters:
             self._safety_stock_available = False
     
     def render_filters(self) -> Dict[str, Any]:
-        """Render all filter components with exclusion support"""
+        """Render all filter components with improved layout"""
         filters = {}
         
         # Main configuration card
         with st.expander("🔧 **Data Configuration**", expanded=True):
             self._apply_custom_css()
             
-            # Section 1: Scope
+            # Section 1: Scope (includes exclusions)
             self._render_scope_section(filters)
             
             # Section 2: Data Sources
@@ -88,9 +88,6 @@ class GAPFilters:
             
             # Section 3: Analysis Options
             self._render_analysis_section(filters)
-            
-            # Section 4: Exclusions
-            self._render_exclusion_section(filters)
             
             st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
         
@@ -101,7 +98,7 @@ class GAPFilters:
         return filters
     
     def _apply_custom_css(self) -> None:
-        """Apply custom CSS for better layout"""
+        """Apply custom CSS for compact layout"""
         st.markdown("""
             <style>
             .section-header {
@@ -113,19 +110,15 @@ class GAPFilters:
                 background: linear-gradient(90deg, #f3f4f6 0%, transparent 100%);
                 border-left: 3px solid #3b82f6;
             }
-            .subsection-box {
-                background: #fafafa;
-                border: 1px solid #e5e7eb;
-                border-radius: 8px;
-                padding: 12px;
+            .filter-row {
+                display: flex;
+                align-items: center;
+                gap: 8px;
                 margin-bottom: 12px;
             }
-            .exclusion-box {
-                background: #fef2f2;
-                border: 1px solid #fecaca;
-                border-radius: 8px;
-                padding: 12px;
-                margin-bottom: 12px;
+            .excl-checkbox {
+                min-width: 80px;
+                font-size: 12px;
             }
             .info-badge {
                 display: inline-block;
@@ -140,24 +133,240 @@ class GAPFilters:
         """, unsafe_allow_html=True)
     
     def _render_scope_section(self, filters: Dict[str, Any]) -> None:
-        """Render Scope section with entity, products, and brands"""
+        """Render Scope section with all exclusions"""
         st.markdown("<div class='section-header'>🔍 Scope</div>", unsafe_allow_html=True)
         
-        with st.container():
-            col1, col2, col3 = st.columns([2, 2, 2])
-            
-            with col1:
-                filters['entity'] = self._render_entity_selector()
-            
-            with col2:
-                product_data = self._render_product_selector_enhanced(filters.get('entity'))
-                filters['products'] = product_data['selected']
-                filters['exclude_products'] = product_data['exclude']
-            
-            with col3:
-                brand_data = self._render_brand_selector_enhanced(filters.get('entity'))
-                filters['brands'] = brand_data['selected']
-                filters['exclude_brands'] = brand_data['exclude']
+        current_filters = self.session_manager.get_filters()
+        
+        # Entity filter with exclusion
+        entity_data = self._render_entity_selector_compact(current_filters)
+        filters['entity'] = entity_data['selected']
+        filters['exclude_entity'] = entity_data['exclude']
+        
+        # Product filter with exclusion
+        product_data = self._render_product_selector_compact(
+            filters.get('entity'), current_filters
+        )
+        filters['products'] = product_data['selected']
+        filters['exclude_products'] = product_data['exclude']
+        
+        # Brand filter with exclusion
+        brand_data = self._render_brand_selector_compact(
+            filters.get('entity'), current_filters
+        )
+        filters['brands'] = brand_data['selected']
+        filters['exclude_brands'] = brand_data['exclude']
+        
+        # Expired inventory exclusion
+        st.markdown("<div style='margin-top: 8px;'></div>", unsafe_allow_html=True)
+        filters['exclude_expired_inventory'] = st.checkbox(
+            "🗑️ Exclude Expired Inventory",
+            value=current_filters.get('exclude_expired_inventory', True),
+            key="exclude_expired_checkbox",
+            help="Remove expired items from supply calculation"
+        )
+        
+        if filters['exclude_expired_inventory']:
+            st.caption("✅ Expired items excluded from analysis")
+    
+    def _render_entity_selector_compact(
+        self, 
+        current_filters: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Render entity selector with exclusion checkbox on same row"""
+        try:
+            entities_df = self.data_loader.get_entities_formatted()
+        except DataLoadError as e:
+            st.error(f"Failed to load entities: {str(e)}")
+            return {'selected': None, 'exclude': False}
+        
+        if entities_df.empty:
+            st.warning("No entities available")
+            return {'selected': None, 'exclude': False}
+        
+        # Create display mapping
+        entity_display = {}
+        entity_map = {}
+        
+        for _, row in entities_df.iterrows():
+            display_text = f"{row['company_code']} | {row['english_name']}"
+            entity_display[row['english_name']] = display_text
+            entity_map[display_text] = row['english_name']
+        
+        display_options = ["All Entities"] + list(entity_display.values())
+        
+        # Get current values
+        current_value = current_filters.get('entity')
+        current_exclude = current_filters.get('exclude_entity', False)
+        
+        # Set default index
+        if current_value and current_value in entity_display:
+            default_index = display_options.index(entity_display[current_value])
+        else:
+            default_index = 0
+        
+        # Render in columns
+        col1, col2 = st.columns([5, 1])
+        
+        with col1:
+            selected_display = st.selectbox(
+                "Entity",
+                options=display_options,
+                index=default_index,
+                key="entity_select",
+                help="Select entity or 'All Entities'"
+            )
+        
+        with col2:
+            st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
+            exclude = st.checkbox(
+                "Excl",
+                value=current_exclude,
+                key="exclude_entity_checkbox",
+                help="Exclude selected entity",
+                disabled=(selected_display == "All Entities")
+            )
+        
+        # Status caption
+        if selected_display != "All Entities":
+            mode = "excluded" if exclude else "selected"
+            st.caption(f"{'🚫' if exclude else '✓'} Entity {mode}")
+        
+        selected_entity = entity_map.get(selected_display) if selected_display != "All Entities" else None
+        
+        return {'selected': selected_entity, 'exclude': exclude}
+    
+    def _render_product_selector_compact(
+        self, 
+        entity: Optional[str],
+        current_filters: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Render product selector with exclusion checkbox on same row"""
+        try:
+            products_df = self.data_loader.get_products(entity)
+        except (DataLoadError, ValidationError) as e:
+            st.error(f"Failed to load products: {str(e)}")
+            return {'selected': [], 'exclude': False}
+        
+        if products_df.empty:
+            st.info("No products available")
+            return {'selected': [], 'exclude': False}
+        
+        selected_products = current_filters.get('products', [])
+        exclude_mode = current_filters.get('exclude_products', False)
+        
+        valid_selected = [p for p in selected_products if p in products_df['product_id'].tolist()]
+        
+        # Format display
+        products_df['display'] = products_df.apply(
+            lambda x: self._format_product_display(
+                x['pt_code'], 
+                x['product_name'], 
+                x.get('package_size', ''),
+                x['brand']
+            ), 
+            axis=1
+        )
+        product_map = dict(zip(products_df['product_id'], products_df['display']))
+        
+        # Render in columns
+        col1, col2 = st.columns([5, 1])
+        
+        with col1:
+            selected = st.multiselect(
+                "Product",
+                options=products_df['product_id'].tolist(),
+                default=valid_selected,
+                format_func=lambda x: product_map.get(x, f"ID: {x}"),
+                placeholder=f"All ({len(products_df)} available)",
+                key="products_multiselect"
+            )
+        
+        with col2:
+            st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
+            exclude = st.checkbox(
+                "Excl",
+                value=exclude_mode,
+                key="exclude_products_checkbox",
+                help="Exclude selected products",
+                disabled=(len(selected) == 0)
+            )
+        
+        # Status caption
+        if selected:
+            mode = "excluded" if exclude else "selected"
+            st.caption(f"{'🚫' if exclude else '✓'} {len(selected)} products {mode}")
+        
+        return {'selected': selected, 'exclude': exclude}
+    
+    def _render_brand_selector_compact(
+        self, 
+        entity: Optional[str],
+        current_filters: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Render brand selector with exclusion checkbox on same row"""
+        try:
+            brands = self.data_loader.get_brands(entity)
+        except (DataLoadError, ValidationError) as e:
+            st.error(f"Failed to load brands: {str(e)}")
+            return {'selected': [], 'exclude': False}
+        
+        if not brands:
+            return {'selected': [], 'exclude': False}
+        
+        selected_brands = current_filters.get('brands', [])
+        exclude_mode = current_filters.get('exclude_brands', False)
+        
+        valid_selected = [b for b in selected_brands if b in brands]
+        
+        # Render in columns
+        col1, col2 = st.columns([5, 1])
+        
+        with col1:
+            selected = st.multiselect(
+                "Brand",
+                options=brands,
+                default=valid_selected,
+                placeholder=f"All ({len(brands)} available)",
+                key="brands_multiselect"
+            )
+        
+        with col2:
+            st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
+            exclude = st.checkbox(
+                "Excl",
+                value=exclude_mode,
+                key="exclude_brands_checkbox",
+                help="Exclude selected brands",
+                disabled=(len(selected) == 0)
+            )
+        
+        # Status caption
+        if selected:
+            mode = "excluded" if exclude else "selected"
+            st.caption(f"{'🚫' if exclude else '✓'} {len(selected)} brands {mode}")
+        
+        return {'selected': selected, 'exclude': exclude}
+    
+    def _format_product_display(
+        self, 
+        pt_code: str, 
+        name: str, 
+        package_size: str, 
+        brand: str,
+        max_name_length: int = 30
+    ) -> str:
+        """Format product display: pt_code | name | package_size (brand)"""
+        display_name = name[:max_name_length] + "..." if len(name) > max_name_length else name
+        
+        parts = [pt_code, display_name]
+        
+        if package_size and str(package_size).strip():
+            parts.append(package_size)
+        
+        display = " | ".join(parts) + f" ({brand})"
+        
+        return display
     
     def _render_data_sources_section(self, filters: Dict[str, Any]) -> None:
         """Render Data Sources section"""
@@ -185,204 +394,6 @@ class GAPFilters:
         
         with col2:
             self._render_date_range_info()
-    
-    def _render_exclusion_section(self, filters: Dict[str, Any]) -> None:
-        """Render Exclusion Options section"""
-        st.markdown("<div class='section-header'>🚫 Exclusions</div>", unsafe_allow_html=True)
-        
-        with st.container():
-            st.markdown("<div class='exclusion-box'>", unsafe_allow_html=True)
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                current_filters = self.session_manager.get_filters()
-                filters['exclude_expired_inventory'] = st.checkbox(
-                    "🗑️ Exclude Expired Inventory",
-                    value=current_filters.get('exclude_expired_inventory', True),
-                    key="exclude_expired_checkbox",
-                    help="Remove expired items from supply calculation"
-                )
-                
-                if filters['exclude_expired_inventory']:
-                    st.caption("✅ Expired items will be excluded")
-                else:
-                    st.caption("⚠️ Including expired items")
-            
-            with col2:
-                st.info(
-                    "💡 **Tip**: Use product/brand exclusion checkboxes above to filter out specific items",
-                    icon="💡"
-                )
-            
-            st.markdown("</div>", unsafe_allow_html=True)
-    
-    def _render_entity_selector(self) -> Optional[str]:
-        """Render entity selector with formatted display"""
-        try:
-            entities_df = self.data_loader.get_entities_formatted()
-        except DataLoadError as e:
-            st.error(f"Failed to load entities: {str(e)}")
-            return None
-        
-        if entities_df.empty:
-            st.warning("No entities available")
-            return None
-        
-        current_filters = self.session_manager.get_filters()
-        current_value = current_filters.get('entity')
-        
-        # Create display mapping: company_code | english_name
-        entity_display = {}
-        entity_map = {}
-        
-        for _, row in entities_df.iterrows():
-            display_text = f"{row['company_code']} | {row['english_name']}"
-            entity_display[row['english_name']] = display_text
-            entity_map[display_text] = row['english_name']
-        
-        display_options = ["All Entities"] + list(entity_display.values())
-        
-        # Set default index
-        if current_value and current_value in entity_display:
-            default_index = display_options.index(entity_display[current_value])
-        else:
-            default_index = 0
-        
-        selected_display = st.selectbox(
-            "Entity",
-            options=display_options,
-            index=default_index,
-            key="entity_select",
-            help="Select specific entity or analyze all"
-        )
-        
-        if selected_display == "All Entities":
-            return None
-        
-        return entity_map.get(selected_display)
-    
-    def _render_product_selector_enhanced(self, entity: Optional[str]) -> Dict[str, Any]:
-        """Render product selector with exclusion checkbox and enhanced formatting"""
-        try:
-            products_df = self.data_loader.get_products(entity)
-        except (DataLoadError, ValidationError) as e:
-            st.error(f"Failed to load products: {str(e)}")
-            return {'selected': [], 'exclude': False}
-        
-        if products_df.empty:
-            st.info("No products available")
-            return {'selected': [], 'exclude': False}
-        
-        current_filters = self.session_manager.get_filters()
-        selected_products = current_filters.get('products', [])
-        exclude_mode = current_filters.get('exclude_products', False)
-        
-        valid_selected = [p for p in selected_products if p in products_df['product_id'].tolist()]
-        
-        # Format display: pt_code | name | package_size (brand)
-        products_df['display'] = products_df.apply(
-            lambda x: self._format_product_display(
-                x['pt_code'], 
-                x['product_name'], 
-                x.get('package_size', ''),
-                x['brand']
-            ), 
-            axis=1
-        )
-        product_map = dict(zip(products_df['product_id'], products_df['display']))
-        
-        # Exclusion checkbox
-        exclude = st.checkbox(
-            "🚫 Exclude selected products",
-            value=exclude_mode,
-            key="exclude_products_checkbox",
-            help="When checked, selected products will be excluded from analysis"
-        )
-        
-        # Product multiselect
-        label = "Products to Exclude" if exclude else "Products to Include"
-        selected = st.multiselect(
-            label,
-            options=products_df['product_id'].tolist(),
-            default=valid_selected,
-            format_func=lambda x: product_map.get(x, f"ID: {x}"),
-            placeholder=f"All ({len(products_df)} available)",
-            key="products_multiselect"
-        )
-        
-        # Status caption
-        if selected:
-            mode_text = "excluded" if exclude else "included"
-            st.caption(f"{'🚫' if exclude else '✓'} {len(selected)} products {mode_text}")
-        
-        return {'selected': selected, 'exclude': exclude}
-    
-    def _render_brand_selector_enhanced(self, entity: Optional[str]) -> Dict[str, Any]:
-        """Render brand selector with exclusion checkbox"""
-        try:
-            brands = self.data_loader.get_brands(entity)
-        except (DataLoadError, ValidationError) as e:
-            st.error(f"Failed to load brands: {str(e)}")
-            return {'selected': [], 'exclude': False}
-        
-        if not brands:
-            return {'selected': [], 'exclude': False}
-        
-        current_filters = self.session_manager.get_filters()
-        selected_brands = current_filters.get('brands', [])
-        exclude_mode = current_filters.get('exclude_brands', False)
-        
-        valid_selected = [b for b in selected_brands if b in brands]
-        
-        # Exclusion checkbox
-        exclude = st.checkbox(
-            "🚫 Exclude selected brands",
-            value=exclude_mode,
-            key="exclude_brands_checkbox",
-            help="When checked, selected brands will be excluded from analysis"
-        )
-        
-        # Brand multiselect
-        label = "Brands to Exclude" if exclude else "Brands to Include"
-        selected = st.multiselect(
-            label,
-            options=brands,
-            default=valid_selected,
-            placeholder=f"All ({len(brands)} available)",
-            key="brands_multiselect"
-        )
-        
-        # Status caption
-        if selected:
-            mode_text = "excluded" if exclude else "included"
-            st.caption(f"{'🚫' if exclude else '✓'} {len(selected)} brands {mode_text}")
-        
-        return {'selected': selected, 'exclude': exclude}
-    
-    def _format_product_display(
-        self, 
-        pt_code: str, 
-        name: str, 
-        package_size: str, 
-        brand: str,
-        max_name_length: int = 30
-    ) -> str:
-        """Format product display: pt_code | name | package_size (brand)"""
-        # Truncate name if too long
-        display_name = name[:max_name_length] + "..." if len(name) > max_name_length else name
-        
-        # Build display string
-        parts = [pt_code, display_name]
-        
-        # Add package size if available
-        if package_size and str(package_size).strip():
-            parts.append(package_size)
-        
-        # Add brand in parentheses
-        display = " | ".join(parts) + f" ({brand})"
-        
-        return display
     
     def _render_supply_sources_compact(self, filters: Dict[str, Any]) -> None:
         """Render supply sources as compact checkbox group"""
@@ -505,6 +516,7 @@ class GAPFilters:
         filters_converted['brands'] = filters.get('brands', [])
         
         # Ensure exclusion flags
+        filters_converted['exclude_entity'] = filters.get('exclude_entity', False)
         filters_converted['exclude_products'] = filters.get('exclude_products', False)
         filters_converted['exclude_brands'] = filters.get('exclude_brands', False)
         filters_converted['exclude_expired_inventory'] = filters.get('exclude_expired_inventory', True)
@@ -557,7 +569,8 @@ class GAPFilters:
         
         # Entity
         if filters.get('entity'):
-            summary_parts.append(f"Entity: {filters['entity']}")
+            mode = "excluded" if filters.get('exclude_entity') else "selected"
+            summary_parts.append(f"Entity: {filters['entity']} ({mode})")
         else:
             summary_parts.append("All Entities")
         
@@ -599,6 +612,8 @@ class GAPFilters:
         
         if filters.get('entity') != defaults['entity']:
             count += 1
+        if filters.get('exclude_entity', False):
+            count += 1
         if filters.get('products', []) != defaults['products']:
             count += 1
         if filters.get('brands', []) != defaults['brands']:
@@ -624,6 +639,7 @@ class GAPFilters:
         """Get default filter configuration"""
         return {
             'entity': None,
+            'exclude_entity': False,
             'products': [],
             'brands': [],
             'exclude_products': False,

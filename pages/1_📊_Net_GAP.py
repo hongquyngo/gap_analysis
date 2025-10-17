@@ -98,15 +98,16 @@ def load_and_calculate_gap(
     filter_values: Dict[str, Any]
 ):
     """
-    Load data and calculate GAP with exclusion support
+    Load data and calculate GAP with full exclusion support
     
     Returns:
         GAPCalculationResult object
     """
     with st.spinner("🔄 Loading data and calculating GAP..."):
-        # Load supply data with exclusions
+        # Load supply data with all exclusions
         supply_df = data_loader.load_supply_data(
             entity_name=filter_values.get('entity'),
+            exclude_entity=filter_values.get('exclude_entity', False),
             product_ids=filter_values.get('products_tuple'),
             brands=filter_values.get('brands_tuple'),
             exclude_products=filter_values.get('exclude_products', False),
@@ -114,9 +115,10 @@ def load_and_calculate_gap(
             exclude_expired=filter_values.get('exclude_expired_inventory', True)
         )
         
-        # Load demand data with exclusions
+        # Load demand data with all exclusions
         demand_df = data_loader.load_demand_data(
             entity_name=filter_values.get('entity'),
+            exclude_entity=filter_values.get('exclude_entity', False),
             product_ids=filter_values.get('products_tuple'),
             brands=filter_values.get('brands_tuple'),
             exclude_products=filter_values.get('exclude_products', False),
@@ -128,6 +130,7 @@ def load_and_calculate_gap(
         if filter_values.get('include_safety_stock', False):
             safety_stock_df = data_loader.load_safety_stock_data(
                 entity_name=filter_values.get('entity'),
+                exclude_entity=filter_values.get('exclude_entity', False),
                 product_ids=filter_values.get('products_tuple'),
                 include_customer_specific=True
             )
@@ -157,7 +160,6 @@ def load_and_calculate_gap(
                    f"{result.metrics.get('affected_customers', 0)} affected customers")
         
         return result
-
 
 def format_value_for_export(value: Any, field_name: str) -> Any:
     """Format values for Excel export (fix 999 issue)"""

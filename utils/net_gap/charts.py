@@ -1,9 +1,9 @@
 # utils/net_gap/charts.py
 
 """
-Visualization Module - Version 3.0 UPDATED
+Visualization Module - Version 3.3 FIXED
+- Fixed abs_gap dtype bug (convert to numeric before abs)
 - Updated to work with GAPCalculationResult
-- Minor optimizations for customer dialog
 - Consistent with new data flow
 """
 
@@ -279,13 +279,28 @@ class GAPCharts:
         gap_df: pd.DataFrame, 
         top_n: int = 10
     ) -> go.Figure:
-        """Create bar chart showing top shortage items"""
+        """
+        Create bar chart showing top shortage items
+        FIXED: Convert net_gap to numeric before calculating abs_gap
+        """
         if gap_df.empty:
             return self._create_empty_chart("No shortage items")
         
         shortage_df = gap_df.copy()
+        
+        # FIX: Convert net_gap to numeric first to avoid dtype object error
+        shortage_df['net_gap'] = pd.to_numeric(shortage_df['net_gap'], errors='coerce').fillna(0)
+        
+        # Now safe to calculate absolute value
         shortage_df['abs_gap'] = shortage_df['net_gap'].abs()
         
+        # Filter out zero gaps
+        shortage_df = shortage_df[shortage_df['abs_gap'] > 0]
+        
+        if shortage_df.empty:
+            return self._create_empty_chart("No shortage items with non-zero gap")
+        
+        # Now nlargest will work properly
         top_items = shortage_df.nlargest(min(top_n, len(shortage_df)), 'abs_gap')
         
         display_names = self._prepare_display_names(top_items)
@@ -327,7 +342,17 @@ class GAPCharts:
             return self._create_empty_chart("No data to compare")
         
         gap_df_sorted = gap_df.copy()
+        
+        # FIX: Convert net_gap to numeric first
+        gap_df_sorted['net_gap'] = pd.to_numeric(gap_df_sorted['net_gap'], errors='coerce').fillna(0)
         gap_df_sorted['abs_gap'] = gap_df_sorted['net_gap'].abs()
+        
+        # Filter valid data
+        gap_df_sorted = gap_df_sorted[gap_df_sorted['abs_gap'] > 0]
+        
+        if gap_df_sorted.empty:
+            return self._create_empty_chart("No items with non-zero gap")
+        
         top_items = gap_df_sorted.nlargest(min(top_n, len(gap_df_sorted)), 'abs_gap')
         
         display_names = self._prepare_short_names(top_items)
@@ -336,10 +361,10 @@ class GAPCharts:
         
         # Supply bars
         if self._include_safety and 'available_supply' in top_items.columns:
-            supply_values = top_items['available_supply']
+            supply_values = pd.to_numeric(top_items['available_supply'], errors='coerce').fillna(0)
             supply_label = 'Available Supply'
         else:
-            supply_values = top_items['total_supply']
+            supply_values = pd.to_numeric(top_items['total_supply'], errors='coerce').fillna(0)
             supply_label = 'Total Supply'
         
         fig.add_trace(go.Bar(
@@ -352,21 +377,25 @@ class GAPCharts:
         ))
         
         # Demand bars
+        demand_values = pd.to_numeric(top_items['total_demand'], errors='coerce').fillna(0)
+        
         fig.add_trace(go.Bar(
             name='Total Demand',
             x=display_names,
-            y=top_items['total_demand'],
+            y=demand_values,
             marker_color='#FF8800',
-            text=top_items['total_demand'].apply(lambda x: self.formatter.format_number(x)),
+            text=demand_values.apply(lambda x: self.formatter.format_number(x)),
             textposition='outside'
         ))
         
         # Safety stock line
         if self._include_safety and 'safety_stock_qty' in top_items.columns:
+            safety_values = pd.to_numeric(top_items['safety_stock_qty'], errors='coerce').fillna(0)
+            
             fig.add_trace(go.Scatter(
                 name='Safety Stock',
                 x=display_names,
-                y=top_items['safety_stock_qty'],
+                y=safety_values,
                 mode='lines+markers',
                 line=dict(color='red', dash='dash'),
                 marker=dict(size=8)
@@ -390,7 +419,15 @@ class GAPCharts:
         if gap_df.empty:
             return self._create_empty_chart("No data")
         
-        coverage_data = gap_df[gap_df['coverage_ratio'] < 10]['coverage_ratio'] * 100
+        # Convert coverage_ratio to numeric
+        coverage_ratio = pd.to_numeric(gap_df['coverage_ratio'], errors='coerce')
+        coverage_data = coverage_ratio[coverage_ratio < 10] * 100
+        
+        # Remove NaN values
+        coverage_data = coverage_data.dropna()
+        
+        if coverage_data.empty:
+            return self._create_empty_chart("No valid coverage data")
         
         fig = go.Figure(data=[
             go.Histogram(
