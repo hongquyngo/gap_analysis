@@ -1,8 +1,8 @@
 # utils/net_gap/constants.py
 
 """
-Constants for GAP Analysis System - Cleaned Version
-Removed unused presets and actions
+Constants for GAP Analysis System - Updated Version
+Optimized chart heights and configurations
 """
 
 # GAP Status Categories - Simplified from 11 to 5
@@ -108,19 +108,24 @@ DEMAND_SOURCES = {
     }
 }
 
-# Field Tooltips
+# Field Tooltips - Enhanced with formula explanations
 FIELD_TOOLTIPS = {
     'pt_code': 'Product code identifier',
-    'Supply': 'Total Supply = Inventory + Pending + Transfer + PO',
-    'Demand': 'Total Demand = Orders + Forecast',
-    'Net GAP': 'Supply - Demand (or Available - Demand with safety)',
-    'Coverage': '(Supply ÷ Demand) × 100%',
-    'Safety Stock': 'Minimum required inventory',
-    'Available': 'Supply - Safety Stock',
-    'True GAP': 'Supply - Demand (ignoring safety)',
-    'At Risk Value': 'Revenue at risk from shortage',
-    'GAP Value': 'Inventory value of gap',
-    'Reorder': 'Below reorder point indicator'
+    'Total Supply': 'Total Supply = Inventory + Pending + Transfer + PO',
+    'Total Demand': 'Total Demand = Orders + Forecast',
+    'Net GAP': 'Available Supply - Demand (considers safety stock if enabled)',
+    'True GAP': 'Total Supply - Demand (ignores safety stock)',
+    'Coverage %': '(Supply ÷ Demand) × 100%',
+    'Safety Stock': 'Minimum required inventory level',
+    'Available Supply': 'Total Supply - Safety Stock',
+    'At Risk Value': 'Revenue at risk from shortage = Shortage × Selling Price',
+    'GAP Value': 'Inventory value of gap = GAP × Unit Cost',
+    'Reorder Point': 'Stock level that triggers reorder',
+    'Below Reorder': 'Indicates if stock is below reorder point',
+    'Safety Coverage': 'Current Inventory ÷ Safety Stock requirement',
+    'Unit Cost': 'Average landed cost per unit',
+    'Sell Price': 'Average selling price per unit',
+    'Customers': 'Number of unique customers affected'
 }
 
 # Export Configuration
@@ -131,12 +136,17 @@ EXPORT_CONFIG = {
     'sheets': ['Summary', 'GAP Details', 'Cost Analysis', 'Calculation Guide']
 }
 
-# UI Configuration
+# UI Configuration - Optimized heights
 UI_CONFIG = {
     'items_per_page_options': [10, 25, 50, 100],
     'default_items_per_page': 25,
     'max_chart_items': 20,
-    'chart_height': 400
+    'chart_height': 400,  # Original height
+    'chart_height_compact': 300,  # Reduced height for donut charts
+    'chart_height_min': 250,  # Minimum for bar charts
+    'chart_height_max': 400,  # Maximum for bar charts
+    'chart_margin_compact': 30,  # Reduced margins
+    'table_row_height': 35  # Height per row in tables
 }
 
 # Status Icons
@@ -147,4 +157,32 @@ STATUS_ICONS = {
     'INACTIVE': '⭕',
     'WARNING': '⚠️',
     'CRITICAL': '🚨'
+}
+
+# Formula Constants
+FORMULA_INFO = {
+    'net_gap': {
+        'formula': 'Available Supply - Total Demand',
+        'description': 'When safety enabled: Available = Supply - Safety Stock'
+    },
+    'true_gap': {
+        'formula': 'Total Supply - Total Demand',
+        'description': 'Always ignores safety stock'
+    },
+    'coverage_ratio': {
+        'formula': '(Supply ÷ Demand) × 100%',
+        'description': 'Supply as percentage of demand'
+    },
+    'at_risk_value': {
+        'formula': '|Shortage Qty| × Selling Price',
+        'description': 'Potential revenue loss'
+    },
+    'gap_value': {
+        'formula': 'Net GAP × Unit Cost',
+        'description': 'Inventory value of the gap'
+    },
+    'safety_impact': {
+        'formula': 'Net GAP - True GAP',
+        'description': 'How safety stock affects the gap'
+    }
 }

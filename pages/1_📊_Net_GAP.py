@@ -1,7 +1,8 @@
 # pages/1_📊_Net_GAP.py
 
 """
-Net GAP Analysis Page - Simplified Version 4.0
+Net GAP Analysis Page - Enhanced Version 4.1
+Added formula guide and optimized charts
 """
 
 import streamlit as st
@@ -42,13 +43,14 @@ from utils.net_gap.components import (
     render_status_summary,
     render_quick_filter,
     apply_quick_filter,
-    render_pagination
+    render_pagination,
+    render_formula_guide  # New component
 )
 from utils.net_gap.export import export_to_excel
 from utils.net_gap.customer_dialog import show_customer_dialog
 from utils.net_gap.constants import UI_CONFIG
 
-VERSION = "4.0"
+VERSION = "4.1"
 
 
 def initialize_system():
@@ -216,33 +218,41 @@ def main():
     
     st.divider()
     
-    # Visual Analysis
+    # Visual Analysis - More compact layout
     st.subheader("📊 Visual Analysis")
     
-    col1, col2 = st.columns([1, 1])
+    # Use tabs for better organization and space saving
+    tab1, tab2, tab3 = st.tabs(["Overview", "Top Items", "Formula Guide"])
     
-    with col1:
-        # Status distribution
-        fig_status = charts.create_status_donut(result.gap_df)
-        st.plotly_chart(fig_status, use_container_width=True)
+    with tab1:
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
+            # Status distribution
+            fig_status = charts.create_status_donut(result.gap_df)
+            st.plotly_chart(fig_status, use_container_width=True)
+        
+        with col2:
+            # Value at risk
+            fig_value = charts.create_value_analysis(result.gap_df)
+            st.plotly_chart(fig_value, use_container_width=True)
     
-    with col2:
-        # Value at risk
-        fig_value = charts.create_value_analysis(result.gap_df)
-        st.plotly_chart(fig_value, use_container_width=True)
+    with tab2:
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
+            st.markdown("#### 📉 Top Shortages")
+            fig_shortage = charts.create_top_items_bar(result.gap_df, 'shortage', top_n=10)
+            st.plotly_chart(fig_shortage, use_container_width=True)
+        
+        with col2:
+            st.markdown("#### 📈 Top Surplus")
+            fig_surplus = charts.create_top_items_bar(result.gap_df, 'surplus', top_n=10)
+            st.plotly_chart(fig_surplus, use_container_width=True)
     
-    # Top items
-    col1, col2 = st.columns([1, 1])
-    
-    with col1:
-        st.markdown("#### 📉 Top Shortages")
-        fig_shortage = charts.create_top_items_bar(result.gap_df, 'shortage', top_n=10)
-        st.plotly_chart(fig_shortage, use_container_width=True)
-    
-    with col2:
-        st.markdown("#### 📈 Top Surplus")
-        fig_surplus = charts.create_top_items_bar(result.gap_df, 'surplus', top_n=10)
-        st.plotly_chart(fig_surplus, use_container_width=True)
+    with tab3:
+        # Formula guide section
+        render_formula_guide()
     
     st.divider()
     
@@ -259,7 +269,7 @@ def main():
     if quick_filter != 'all':
         st.info(f"Showing {len(filtered_df)} of {len(result.gap_df)} items ({quick_filter})")
     
-    # Simple table controls
+    # Table controls
     col1, col2, col3 = st.columns([2, 2, 3])
     
     with col1:
@@ -274,14 +284,13 @@ def main():
         # Search
         search = st.text_input("Search", placeholder="Filter in all columns...", key="search")
         if search:
-            # Search across ALL columns
             mask = filtered_df.astype(str).apply(
                 lambda x: x.str.contains(search, case=False, na=False)
             ).any(axis=1)
             filtered_df = filtered_df[mask]
     
     with col3:
-        # Export button with full details
+        # Export button
         if st.button("📥 Export Excel", type="primary", use_container_width=True):
             try:
                 excel_data = export_to_excel(
@@ -301,7 +310,7 @@ def main():
                 logger.error(f"Export failed: {e}")
                 st.error("Export failed")
     
-    # Display table with ALL columns (simplified)
+    # Display enhanced table with column visibility control
     page_info = render_data_table(
         filtered_df,
         items_per_page=items_per_page,

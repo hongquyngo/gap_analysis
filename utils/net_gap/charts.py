@@ -1,8 +1,8 @@
 # utils/net_gap/charts.py
 
 """
-Visualization components for GAP Analysis - Cleaned Version
-Removed unused create_coverage_histogram function
+Visualization components for GAP Analysis - Optimized Version
+Chart heights reduced for better screen utilization
 """
 
 import pandas as pd
@@ -16,13 +16,13 @@ logger = logging.getLogger(__name__)
 
 
 class GAPCharts:
-    """Essential visualizations only"""
+    """Essential visualizations with optimized dimensions"""
     
     def __init__(self, formatter=None):
         self.formatter = formatter
     
     def create_status_donut(self, gap_df: pd.DataFrame) -> go.Figure:
-        """Create simplified status donut chart (5 categories)"""
+        """Create simplified status donut chart with reduced height"""
         
         if gap_df.empty:
             return self._empty_chart("No data available")
@@ -66,15 +66,15 @@ class GAPCharts:
         fig.add_annotation(
             text=f"<b>{shortage_count}</b><br>Shortage Items",
             x=0.5, y=0.5,
-            font=dict(size=20),
+            font=dict(size=18),
             showarrow=False
         )
         
         fig.update_layout(
             title="GAP Distribution",
-            height=UI_CONFIG['chart_height'],
+            height=UI_CONFIG['chart_height_compact'],  # Reduced from 400px to 300px
             showlegend=True,
-            margin=dict(t=40, b=40, l=40, r=40)
+            margin=dict(t=30, b=30, l=30, r=30)  # Reduced margins
         )
         
         return fig
@@ -85,7 +85,7 @@ class GAPCharts:
         chart_type: str = 'shortage',
         top_n: int = 10
     ) -> go.Figure:
-        """Create bar chart for top shortage or surplus items"""
+        """Create bar chart with dynamic height based on items"""
         
         if gap_df.empty:
             return self._empty_chart("No data available")
@@ -108,10 +108,10 @@ class GAPCharts:
         # Get top N
         df = df.nlargest(min(top_n, len(df)), 'value')
         
-        # Prepare display names
+        # Prepare display names (shorter for compact display)
         if 'product_name' in df.columns:
             df['display'] = df.apply(
-                lambda x: f"{x.get('pt_code', '')} - {x.get('product_name', '')[:30]}",
+                lambda x: f"{x.get('pt_code', '')} - {x.get('product_name', '')[:25]}",
                 axis=1
             )
         else:
@@ -130,18 +130,21 @@ class GAPCharts:
             )
         ])
         
+        # Dynamic height calculation: min 250px, max 400px
+        dynamic_height = min(400, max(250, len(df) * 35))
+        
         fig.update_layout(
             title=title,
             xaxis_title=f"{chart_type.title()} Quantity",
             yaxis=dict(autorange="reversed"),
-            height=max(300, min(700, len(df) * 40)),
-            margin=dict(l=200, r=100, t=50, b=50)
+            height=dynamic_height,
+            margin=dict(l=180, r=80, t=40, b=40)  # Reduced margins
         )
         
         return fig
     
     def create_value_analysis(self, gap_df: pd.DataFrame) -> go.Figure:
-        """Create value at risk analysis chart"""
+        """Create value at risk analysis chart with optimized height"""
         
         if gap_df.empty or 'at_risk_value_usd' not in gap_df.columns:
             return self._empty_chart("No value data available")
@@ -155,10 +158,10 @@ class GAPCharts:
         # Get top 15 items
         risk_df = risk_df.nlargest(min(15, len(risk_df)), 'at_risk_value_usd')
         
-        # Prepare display
+        # Prepare display (more compact)
         if 'product_name' in risk_df.columns:
             risk_df['display'] = risk_df.apply(
-                lambda x: f"{x.get('pt_code', '')} - {x.get('product_name', '')[:25]}",
+                lambda x: f"{x.get('pt_code', '')} - {x.get('product_name', '')[:20]}",
                 axis=1
             )
         else:
@@ -174,7 +177,11 @@ class GAPCharts:
                     color=risk_df['at_risk_value_usd'],
                     colorscale='Reds',
                     showscale=True,
-                    colorbar=dict(title="Value USD")
+                    colorbar=dict(
+                        title="USD",
+                        thickness=15,
+                        len=0.7
+                    )
                 ),
                 text=risk_df['at_risk_value_usd'].apply(lambda x: f"${x:,.0f}"),
                 textposition='outside',
@@ -182,12 +189,15 @@ class GAPCharts:
             )
         ])
         
+        # Dynamic height with limits
+        dynamic_height = min(400, max(280, len(risk_df) * 32))
+        
         fig.update_layout(
             title="Top Items by Value at Risk",
             xaxis_title="Value at Risk (USD)",
             yaxis=dict(autorange="reversed"),
-            height=max(350, min(700, len(risk_df) * 40)),
-            margin=dict(l=200, r=100, t=50, b=50)
+            height=dynamic_height,
+            margin=dict(l=180, r=100, t=40, b=40)
         )
         
         return fig
@@ -201,11 +211,11 @@ class GAPCharts:
             xref="paper", yref="paper",
             x=0.5, y=0.5,
             showarrow=False,
-            font=dict(size=16, color="gray")
+            font=dict(size=14, color="gray")
         )
         
         fig.update_layout(
-            height=UI_CONFIG['chart_height'],
+            height=UI_CONFIG['chart_height_compact'],
             xaxis=dict(visible=False),
             yaxis=dict(visible=False),
             paper_bgcolor='rgba(0,0,0,0)',

@@ -1,8 +1,8 @@
 # utils/net_gap/components.py
 
 """
-UI Components for GAP Analysis - Cleaned Version
-Removed unused preset functions and simplified display logic
+UI Components for GAP Analysis - Enhanced Version
+Added formula guide and improved dataframe display
 """
 
 import streamlit as st
@@ -15,6 +15,100 @@ from .constants import STATUS_ICONS, FIELD_TOOLTIPS, UI_CONFIG
 from .formatters import GAPFormatter
 
 logger = logging.getLogger(__name__)
+
+
+def render_formula_guide():
+    """Render expandable formula explanation guide"""
+    
+    with st.expander("📊 **GAP Calculation Guide** - Click to understand the formulas", expanded=False):
+        
+        # Main formulas
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
+            st.markdown("""
+            ### Core Formulas
+            
+            **Net GAP** = Available Supply - Total Demand
+            - When safety enabled: Available = Supply - Safety Stock
+            - When safety disabled: Available = Supply
+            
+            **True GAP** = Total Supply - Total Demand
+            - Always ignores safety stock
+            - Shows actual supply vs demand difference
+            
+            **Coverage Ratio** = (Supply ÷ Demand) × 100%
+            - Shows supply as percentage of demand
+            - >100% means surplus, <100% means shortage
+            """)
+        
+        with col2:
+            st.markdown("""
+            ### Financial Calculations
+            
+            **At Risk Value** = |Shortage Qty| × Selling Price
+            - Revenue that could be lost due to shortage
+            
+            **GAP Value** = Net GAP × Unit Cost
+            - Inventory value of the gap
+            
+            **Safety Stock Impact** = Net GAP - True GAP
+            - Shows how safety stock affects the gap
+            - Negative means safety stock creates shortage
+            """)
+        
+        # Example scenarios
+        st.markdown("---")
+        st.markdown("### Example Scenarios")
+        
+        example_data = pd.DataFrame([
+            {
+                'Scenario': '✅ Safe',
+                'Supply': 100,
+                'Safety': 20,
+                'Demand': 70,
+                'Net GAP': '+10',
+                'True GAP': '+30',
+                'Interpretation': 'OK with safety, 30 units actual surplus'
+            },
+            {
+                'Scenario': '⚠️ Risk',
+                'Supply': 100,
+                'Safety': 20,
+                'Demand': 90,
+                'Net GAP': '-10',
+                'True GAP': '+10',
+                'Interpretation': 'Shortage with safety, but stock exists'
+            },
+            {
+                'Scenario': '🔴 Critical',
+                'Supply': 50,
+                'Safety': 20,
+                'Demand': 80,
+                'Net GAP': '-50',
+                'True GAP': '-30',
+                'Interpretation': 'Real shortage even without safety'
+            }
+        ])
+        
+        st.dataframe(
+            example_data,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                'Supply': st.column_config.NumberColumn(format="%d"),
+                'Safety': st.column_config.NumberColumn(format="%d"),
+                'Demand': st.column_config.NumberColumn(format="%d"),
+            }
+        )
+        
+        # Quick tips
+        st.info("""
+        💡 **Quick Tips:**
+        - **Net GAP < 0**: You have a shortage considering safety requirements
+        - **True GAP < 0**: You have a real shortage (not enough stock even without safety)
+        - **Net GAP < 0 but True GAP > 0**: Safety stock is causing the shortage
+        """)
 
 
 def render_kpi_cards(metrics: Dict[str, Any], include_safety: bool = False):
@@ -137,174 +231,159 @@ def prepare_detailed_display(
     include_safety: bool = False
 ) -> pd.DataFrame:
     """
-    Prepare display dataframe with ALL formatting
-    Simplified - always returns all columns formatted
+    Prepare display dataframe with selected meaningful columns
+    Removed product_id as pt_code serves the same purpose
     """
     
-    display_df = df.copy()
+    if df.empty:
+        return df
     
-    # Status display mapping
-    status_display = {
-        'CRITICAL_BREACH': '🚨 Critical Breach',
-        'BELOW_SAFETY': '⚠️ Below Safety',
-        'AT_REORDER': '📦 At Reorder',
-        'HAS_EXPIRED': '⌛ Has Expired',
-        'EXPIRY_RISK': '⏰ Expiry Risk',
-        'NO_DEMAND': '⚪ No Demand',
-        'SEVERE_SHORTAGE': '🔴 Severe Shortage',
-        'HIGH_SHORTAGE': '🟠 High Shortage',
-        'MODERATE_SHORTAGE': '🟡 Moderate Shortage',
-        'BALANCED': '✅ Balanced',
-        'LIGHT_SURPLUS': '🔵 Light Surplus',
-        'MODERATE_SURPLUS': '🟣 Moderate Surplus',
-        'HIGH_SURPLUS': '🟠 High Surplus',
-        'SEVERE_SURPLUS': '🔴 Severe Surplus'
-    }
+    # Create a copy for display
+    display_df = pd.DataFrame()
     
-    # Format Status column
-    if 'gap_status' in display_df.columns:
-        display_df['Status'] = display_df['gap_status'].map(status_display).fillna('❓ Unknown')
+    # Product identification (no product_id, using pt_code instead)
+    if 'pt_code' in df.columns:
+        display_df['PT Code'] = df['pt_code']
+    if 'product_name' in df.columns:
+        display_df['Product Name'] = df['product_name']
+    if 'brand' in df.columns:
+        display_df['Brand'] = df['brand']
+    if 'standard_uom' in df.columns:
+        display_df['UOM'] = df['standard_uom']
     
-    # Format Supply columns
-    if 'total_supply' in display_df.columns:
-        display_df['Supply'] = display_df['total_supply'].apply(
-            lambda x: formatter.format_number(x, field_name='supply')
+    # Supply columns (raw values)
+    if 'total_supply' in df.columns:
+        display_df['Total Supply'] = df['total_supply'].apply(
+            lambda x: formatter.format_number(x, field_name='total_supply')
         )
     
-    # Format individual supply sources
-    supply_source_cols = ['supply_inventory', 'supply_can_pending', 
-                          'supply_warehouse_transfer', 'supply_purchase_order']
-    for col in supply_source_cols:
-        if col in display_df.columns:
-            display_name = col.replace('supply_', '').replace('_', ' ').title()
-            display_df[display_name] = display_df[col].apply(
-                lambda x: formatter.format_number(x, field_name=col)
-            )
+    # Supply breakdown
+    if 'supply_inventory' in df.columns:
+        display_df['Inventory'] = df['supply_inventory'].apply(
+            lambda x: formatter.format_number(x, field_name='supply_inventory')
+        )
+    if 'supply_can_pending' in df.columns:
+        display_df['CAN Pending'] = df['supply_can_pending'].apply(
+            lambda x: formatter.format_number(x, field_name='supply_can_pending')
+        )
+    if 'supply_warehouse_transfer' in df.columns:
+        display_df['Transfer'] = df['supply_warehouse_transfer'].apply(
+            lambda x: formatter.format_number(x, field_name='supply_warehouse_transfer')
+        )
+    if 'supply_purchase_order' in df.columns:
+        display_df['PO'] = df['supply_purchase_order'].apply(
+            lambda x: formatter.format_number(x, field_name='supply_purchase_order')
+        )
     
-    # Format Demand columns
-    if 'total_demand' in display_df.columns:
-        display_df['Demand'] = display_df['total_demand'].apply(formatter.format_number)
+    # Demand columns
+    if 'total_demand' in df.columns:
+        display_df['Total Demand'] = df['total_demand'].apply(formatter.format_number)
     
-    # Format individual demand sources
-    demand_source_cols = ['demand_oc_pending', 'demand_forecast']
-    for col in demand_source_cols:
-        if col in display_df.columns:
-            display_name = col.replace('demand_', '').replace('_', ' ').title()
-            display_df[display_name] = display_df[col].apply(formatter.format_number)
+    if 'demand_oc_pending' in df.columns:
+        display_df['OC Pending'] = df['demand_oc_pending'].apply(formatter.format_number)
+    if 'demand_forecast' in df.columns:
+        display_df['Forecast'] = df['demand_forecast'].apply(formatter.format_number)
     
-    # Format GAP columns
-    if 'net_gap' in display_df.columns:
-        display_df['Net GAP'] = display_df['net_gap'].apply(
+    # GAP Analysis - Keep both Net GAP and True GAP
+    if 'net_gap' in df.columns:
+        display_df['Net GAP'] = df['net_gap'].apply(
             lambda x: formatter.format_number(x, show_sign=True)
         )
     
-    # Format Coverage
-    if 'coverage_ratio' in display_df.columns:
-        display_df['Coverage'] = display_df['coverage_ratio'].apply(formatter.format_coverage)
+    # True GAP - Important to keep for transparency
+    if include_safety and 'total_supply' in df.columns and 'total_demand' in df.columns:
+        true_gap = df['total_supply'] - df['total_demand']
+        display_df['True GAP'] = true_gap.apply(
+            lambda x: formatter.format_number(x, show_sign=True)
+        )
     
-    if 'gap_percentage' in display_df.columns:
-        display_df['GAP %'] = display_df['gap_percentage'].apply(
+    # Coverage metrics
+    if 'coverage_ratio' in df.columns:
+        display_df['Coverage %'] = df['coverage_ratio'].apply(formatter.format_coverage)
+    
+    if 'gap_percentage' in df.columns:
+        display_df['GAP %'] = df['gap_percentage'].apply(
             lambda x: formatter.format_percentage(x, show_sign=True)
         )
     
-    # Safety Stock columns
+    # Safety Stock columns (when enabled)
     if include_safety:
-        if 'safety_stock_qty' in display_df.columns:
-            display_df['Safety Stock'] = display_df['safety_stock_qty'].apply(
+        if 'safety_stock_qty' in df.columns:
+            display_df['Safety Stock'] = df['safety_stock_qty'].apply(
                 lambda x: formatter.format_number(x, field_name='safety_stock_qty')
             )
         
-        if 'available_supply' in display_df.columns:
-            display_df['Available'] = display_df['available_supply'].apply(
+        if 'available_supply' in df.columns:
+            display_df['Available Supply'] = df['available_supply'].apply(
                 lambda x: formatter.format_number(x, field_name='available_supply')
             )
-            
-            # Calculate True GAP (ignoring safety)
-            if 'total_supply' in display_df.columns and 'total_demand' in display_df.columns:
-                true_gap = display_df['total_supply'] - display_df['total_demand']
-                display_df['True GAP'] = true_gap.apply(
-                    lambda x: formatter.format_number(x, show_sign=True)
-                )
         
-        if 'safety_coverage' in display_df.columns:
-            display_df['Safety Cov'] = display_df['safety_coverage'].apply(
-                lambda x: f"{x:.1f}x" if pd.notna(x) and x < 999 else "N/A"
+        if 'reorder_point' in df.columns:
+            display_df['Reorder Point'] = df['reorder_point'].apply(
+                lambda x: formatter.format_number(x, field_name='reorder_point')
             )
         
-        if 'days_of_supply' in display_df.columns:
-            display_df['Days Supply'] = display_df['days_of_supply'].apply(formatter.format_days)
-        
-        if 'below_reorder' in display_df.columns:
-            display_df['Reorder'] = display_df['below_reorder'].apply(
+        if 'below_reorder' in df.columns:
+            display_df['Below Reorder'] = df['below_reorder'].apply(
                 lambda x: '⚠️ Yes' if x else '✅ No'
+            )
+        
+        if 'safety_coverage' in df.columns:
+            display_df['Safety Coverage'] = df['safety_coverage'].apply(
+                lambda x: f"{x:.1f}x" if pd.notna(x) and x < 999 else "N/A"
             )
     
     # Financial columns
-    if 'avg_unit_cost_usd' in display_df.columns:
-        display_df['Unit Cost'] = display_df['avg_unit_cost_usd'].apply(
+    if 'avg_unit_cost_usd' in df.columns:
+        display_df['Unit Cost'] = df['avg_unit_cost_usd'].apply(
             lambda x: formatter.format_currency(x, decimals=2)
         )
     
-    if 'avg_selling_price_usd' in display_df.columns:
-        display_df['Sell Price'] = display_df['avg_selling_price_usd'].apply(
+    if 'avg_selling_price_usd' in df.columns:
+        display_df['Sell Price'] = df['avg_selling_price_usd'].apply(
             lambda x: formatter.format_currency(x, decimals=2)
         )
     
-    if 'at_risk_value_usd' in display_df.columns:
-        display_df['At Risk Value'] = display_df['at_risk_value_usd'].apply(
+    if 'at_risk_value_usd' in df.columns:
+        display_df['At Risk Value'] = df['at_risk_value_usd'].apply(
             lambda x: formatter.format_currency(x, abbreviate=True)
         )
     
-    if 'gap_value_usd' in display_df.columns:
-        display_df['GAP Value'] = display_df['gap_value_usd'].apply(
+    if 'gap_value_usd' in df.columns:
+        display_df['GAP Value'] = df['gap_value_usd'].apply(
             lambda x: formatter.format_currency(x, abbreviate=True)
         )
     
-    if 'supply_value_usd' in display_df.columns:
-        display_df['Supply Value'] = display_df['supply_value_usd'].apply(
-            lambda x: formatter.format_currency(x, abbreviate=True)
+    # Status columns
+    if 'gap_status' in df.columns:
+        status_icons = {
+            'CRITICAL_BREACH': '🚨',
+            'SEVERE_SHORTAGE': '🔴',
+            'HIGH_SHORTAGE': '🟠',
+            'MODERATE_SHORTAGE': '🟡',
+            'BALANCED': '✅',
+            'LIGHT_SURPLUS': '🔵',
+            'MODERATE_SURPLUS': '🟣',
+            'HIGH_SURPLUS': '🟠',
+            'SEVERE_SURPLUS': '🔴',
+            'BELOW_SAFETY': '⚠️',
+            'NO_DEMAND': '⚪'
+        }
+        display_df['Status'] = df['gap_status'].map(
+            lambda x: f"{status_icons.get(x, '❓')} {x.replace('_', ' ').title()}"
         )
     
-    if 'demand_value_usd' in display_df.columns:
-        display_df['Demand Value'] = display_df['demand_value_usd'].apply(
-            lambda x: formatter.format_currency(x, abbreviate=True)
-        )
+    if 'priority' in df.columns:
+        priority_map = {1: 'P1-Critical', 2: 'P2-High', 3: 'P3-Medium', 4: 'P4-Low', 99: 'P99-OK'}
+        display_df['Priority'] = df['priority'].map(priority_map).fillna('Unknown')
     
-    # Customer metrics
-    if 'customer_count' in display_df.columns:
-        display_df['Customers'] = display_df['customer_count'].apply(
-            lambda x: f"{int(x):,}" if pd.notna(x) else "0"
-        )
+    if 'suggested_action' in df.columns:
+        display_df['Action'] = df['suggested_action']
     
-    # Urgency metrics
-    if 'count_overdue' in display_df.columns:
-        display_df['Overdue'] = display_df['count_overdue'].apply(
-            lambda x: f"{int(x):,}" if x > 0 else "-"
-        )
-    
-    if 'count_urgent' in display_df.columns:
-        display_df['Urgent'] = display_df['count_urgent'].apply(
-            lambda x: f"{int(x):,}" if x > 0 else "-"
-        )
-    
-    # Priority
-    if 'priority' in display_df.columns:
-        priority_display = {1: 'P1-Critical', 2: 'P2-High', 3: 'P3-Medium', 4: 'P4-Low', 99: 'P99-OK'}
-        display_df['Priority'] = display_df['priority'].map(priority_display).fillna('Unknown')
-    
-    # Action
-    if 'suggested_action' in display_df.columns:
-        display_df['Action'] = display_df['suggested_action']
-    
-    # Expiry information
-    if 'expired_qty' in display_df.columns:
-        display_df['Expired Qty'] = display_df['expired_qty'].apply(
-            lambda x: formatter.format_number(x) if x > 0 else "-"
-        )
-    
-    if 'near_expiry_qty' in display_df.columns:
-        display_df['Near Expiry'] = display_df['near_expiry_qty'].apply(
-            lambda x: formatter.format_number(x) if x > 0 else "-"
+    # Customer impact
+    if 'customer_count' in df.columns:
+        display_df['Customers'] = df['customer_count'].apply(
+            lambda x: f"{int(x):,}" if pd.notna(x) and x > 0 else "-"
         )
     
     return display_df
@@ -317,7 +396,7 @@ def render_data_table(
     formatter: Optional[GAPFormatter] = None,
     include_safety: bool = False
 ):
-    """Simplified data table - always loads ALL columns"""
+    """Enhanced data table with column visibility control"""
     
     if formatter is None:
         formatter = GAPFormatter()
@@ -326,30 +405,44 @@ def render_data_table(
         st.info("No data matches current filters")
         return None
     
-    # Prepare ALL columns with complete formatting
+    # Prepare display dataframe
     display_df = prepare_detailed_display(
         df, 
         formatter, 
         include_safety=include_safety
     )
     
-    # Default visible columns
+    # Define default visible columns (essential only)
     default_visible = [
-        'pt_code', 'product_name', 'brand',
-        'Supply', 'Inventory', 'Can Pending', 'Warehouse Transfer', 'Purchase Order',
-        'Demand', 'Oc Pending', 'Forecast',
-        'Net GAP', 'Coverage', 'GAP %', 'Status', 'Priority', 'Action'
+        'PT Code', 'Product Name', 'Brand',
+        'Total Supply', 'Total Demand', 
+        'Net GAP', 'Coverage %',
+        'Status', 'Priority'
     ]
     
-    # Filter to available columns
-    visible_columns = [col for col in default_visible if col in display_df.columns]
+    # Add True GAP if safety is enabled
+    if include_safety and 'True GAP' in display_df.columns:
+        default_visible.insert(6, 'True GAP')  # Insert after Net GAP
     
-    # Add remaining columns (hidden by default)
-    all_other_columns = [col for col in display_df.columns if col not in visible_columns]
-    column_order = visible_columns + all_other_columns
+    # Configure column visibility
+    column_config = {}
     
-    # Reorder dataframe
-    display_df = display_df[column_order]
+    # Set help text for important columns
+    help_texts = {
+        'Net GAP': 'Supply minus Demand (considering safety if enabled)',
+        'True GAP': 'Supply minus Demand (ignoring safety stock)',
+        'Coverage %': 'Supply as percentage of Demand',
+        'Available Supply': 'Supply after safety stock reservation',
+        'Safety Coverage': 'How many times safety stock is covered',
+        'At Risk Value': 'Revenue at risk due to shortage'
+    }
+    
+    for col, help_text in help_texts.items():
+        if col in display_df.columns:
+            column_config[col] = st.column_config.Column(
+                col,
+                help=help_text
+            )
     
     # Pagination
     total_items = len(display_df)
@@ -360,19 +453,21 @@ def render_data_table(
     end_idx = min(start_idx + items_per_page, total_items)
     
     # Display info
-    st.caption(f"Showing {start_idx+1}-{end_idx} of {total_items} items | Columns: {len(display_df.columns)}")
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.caption(f"Showing {start_idx+1}-{end_idx} of {total_items} items | {len(display_df.columns)} columns available")
+    with col2:
+        st.caption("👁️ Click column headers to show/hide")
     
-    # Display table with ALL columns (user can toggle visibility)
+    # Display table with configurable columns
     st.dataframe(
         display_df.iloc[start_idx:end_idx],
         use_container_width=True,
-        hide_index=False,
-        column_config={
-            col: st.column_config.Column(col, help=FIELD_TOOLTIPS.get(col))
-            for col in display_df.columns if col in FIELD_TOOLTIPS
-        },
-        column_order=column_order,
-        height=min(600, (end_idx - start_idx) * 35 + 100)
+        hide_index=True,
+        column_config=column_config,
+        height=min(600, (end_idx - start_idx) * 35 + 50),
+        # Enable column visibility toggle
+        key=f"gap_table_{page}"
     )
     
     return {
@@ -394,7 +489,7 @@ def render_pagination(current_page: int, total_pages: int, key_prefix: str = "pa
     new_page = current_page
     
     with col1:
-        if st.button("⮜", disabled=(current_page == 1), key=f"{key_prefix}_first"):
+        if st.button("⏮", disabled=(current_page == 1), key=f"{key_prefix}_first"):
             new_page = 1
     
     with col2:
@@ -414,7 +509,7 @@ def render_pagination(current_page: int, total_pages: int, key_prefix: str = "pa
             new_page = current_page + 1
     
     with col5:
-        if st.button("⮞", disabled=(current_page == total_pages), key=f"{key_prefix}_last"):
+        if st.button("⏭", disabled=(current_page == total_pages), key=f"{key_prefix}_last"):
             new_page = total_pages
     
     return new_page
@@ -483,10 +578,8 @@ def apply_quick_filter(df: pd.DataFrame, filter_type: str) -> pd.DataFrame:
         return df
     
     if filter_type == 'critical':
-        # Show only critical priority items
         return df[df['priority'] == 1]
     
-    # Map filter to category
     category_map = {
         'shortage': 'SHORTAGE',
         'optimal': 'OPTIMAL',
