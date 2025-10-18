@@ -461,15 +461,20 @@ class GAPFilters:
                     'pt_code': row.get('pt_code', '')
                 }
             
-            # Current selection
-            current_products = current.get('products', [])
-            valid_selected = [p for p in current_products if p in product_map]
+            # Get selection from session state if exists, otherwise from current filters
+            session_key = 'product_selection_state'
+            if session_key in st.session_state:
+                valid_selected = st.session_state[session_key]
+            else:
+                current_products = current.get('products', [])
+                valid_selected = [p for p in current_products if p in product_map]
             
             # Check if Quick Add was confirmed
             if 'quick_add_confirmed' in st.session_state:
                 new_ids = st.session_state.quick_add_confirmed
-                # Merge with existing selection
+                # Merge with existing selection and save to session state
                 valid_selected = list(set(valid_selected + new_ids))
+                st.session_state[session_key] = valid_selected
                 del st.session_state.quick_add_confirmed
             
             # Layout with Quick Add button
@@ -487,9 +492,11 @@ class GAPFilters:
                     label_visibility="collapsed",
                     help="Select products or use Quick Add for bulk import"
                 )
+                
+                # Update session state whenever selection changes
+                st.session_state[session_key] = selected
             
             with sub2:
-                exclude = current.get('exclude_products', False)
                 if st.button("📋 Quick Add", key="quick_add_btn", use_container_width=True,
                             help="Bulk import PT codes"):
                     st.session_state.show_quick_add = True

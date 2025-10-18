@@ -1,8 +1,7 @@
-# utils/net_gap/formatters.py
+# utils/net_gap/formatters.py - Fixed display for no-demand items
 
 """
-Formatting utilities for GAP Analysis - Cleaned Version
-Removed unused format_status and format_for_excel methods
+Formatting utilities for GAP Analysis - Fixed no-demand display
 """
 
 import pandas as pd
@@ -18,7 +17,7 @@ ZERO_DEFAULT_FIELDS = [
 
 
 class GAPFormatter:
-    """Handles all formatting for display and export"""
+    """Handles all formatting for display and export with logical no-demand handling"""
     
     @staticmethod
     def format_number(
@@ -88,12 +87,13 @@ class GAPFormatter:
     def format_percentage(
         value: Any,
         decimals: int = 1,
-        show_sign: bool = False
+        show_sign: bool = False,
+        no_demand_text: str = "N/A"
     ) -> str:
-        """Format as percentage"""
+        """Format as percentage with special handling for no-demand"""
         
         if pd.isna(value) or value is None:
-            return "N/A"
+            return no_demand_text
         
         try:
             formatted = f"{value:.{decimals}f}%"
@@ -108,12 +108,17 @@ class GAPFormatter:
     
     @staticmethod
     def format_coverage(value: Any) -> str:
-        """Format coverage ratio for display"""
+        """Format coverage ratio for display with logical no-demand handling"""
         
-        if pd.isna(value) or value is None:
+        # Handle NaN (no demand case)
+        if pd.isna(value):
+            return "No Demand"
+        
+        if value is None:
             return "N/A"
         
         try:
+            # Normal coverage formatting
             if value > 10:  # >1000%
                 return ">999%"
             elif value <= 0:
@@ -121,6 +126,22 @@ class GAPFormatter:
             else:
                 return f"{value*100:.0f}%"
                 
+        except (ValueError, TypeError):
+            return str(value)
+    
+    @staticmethod
+    def format_gap_percentage(value: Any) -> str:
+        """Format GAP percentage with no-demand handling"""
+        
+        # Handle NaN (no demand case)
+        if pd.isna(value):
+            return "No Demand"
+        
+        if value is None:
+            return "N/A"
+        
+        try:
+            return f"{value:.1f}%"
         except (ValueError, TypeError):
             return str(value)
     

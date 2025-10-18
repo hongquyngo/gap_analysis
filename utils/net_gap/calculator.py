@@ -1,7 +1,7 @@
-# utils/net_gap/calculator.py
+# utils/net_gap/calculator.py - Fixed coverage logic for no-demand items
 
 """
-Simplified GAP Calculator
+Simplified GAP Calculator with improved no-demand handling
 """
 
 import pandas as pd
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class GAPCalculator:
-    """Simplified GAP calculation engine"""
+    """Simplified GAP calculation engine with logical coverage handling"""
     
     def calculate_net_gap(
         self,
@@ -61,7 +61,7 @@ class GAPCalculator:
             if include_safety_stock and safety_stock_df is not None:
                 gap_df = self._add_safety_stock(gap_df, safety_stock_df, group_by)
             
-            # Calculate GAP metrics
+            # Calculate GAP metrics with improved logic
             gap_df = self._calculate_metrics(gap_df, include_safety_stock)
             
             # Sort by priority
@@ -250,7 +250,7 @@ class GAPCalculator:
         return gap_df
     
     def _calculate_metrics(self, gap_df: pd.DataFrame, include_safety: bool) -> pd.DataFrame:
-        """Calculate GAP metrics"""
+        """Calculate GAP metrics with improved no-demand handling"""
         
         # Available supply (considering safety stock)
         if include_safety and 'safety_stock_qty' in gap_df.columns:
@@ -264,18 +264,19 @@ class GAPCalculator:
         # Net GAP
         gap_df['net_gap'] = gap_df['available_supply'] - gap_df['total_demand']
         
-        # Coverage ratio
+        # Coverage ratio - IMPROVED LOGIC for no-demand items
+        # When demand is 0, coverage is undefined (not infinite)
         gap_df['coverage_ratio'] = np.where(
             gap_df['total_demand'] > 0,
             gap_df['available_supply'] / gap_df['total_demand'],
-            np.where(gap_df['available_supply'] > 0, 999, 0)
+            np.nan  # Use NaN for undefined coverage when no demand
         )
         
-        # GAP percentage
+        # GAP percentage - Also handle no-demand case logically
         gap_df['gap_percentage'] = np.where(
             gap_df['total_demand'] > 0,
             (gap_df['net_gap'] / gap_df['total_demand']) * 100,
-            np.where(gap_df['available_supply'] > 0, 100, 0)
+            np.nan  # Use NaN when no demand
         )
         
         # Safety metrics
@@ -283,7 +284,7 @@ class GAPCalculator:
             gap_df['safety_coverage'] = np.where(
                 gap_df['safety_stock_qty'] > 0,
                 gap_df.get('supply_inventory', gap_df['total_supply']) / gap_df['safety_stock_qty'],
-                999
+                np.nan  # NaN when no safety stock defined
             )
             
             gap_df['below_reorder'] = (
@@ -309,15 +310,22 @@ class GAPCalculator:
         return gap_df
     
     def _classify_status(self, row: pd.Series) -> str:
-        """Classify GAP status - simplified logic"""
+        """Classify GAP status - improved for no-demand"""
         
-        coverage = row.get('coverage_ratio', 0)
+        coverage = row.get('coverage_ratio')
         demand = row.get('total_demand', 0)
         supply = row.get('total_supply', 0)
         
-        # No demand
+        # No demand cases
         if demand == 0:
-            return 'NO_DEMAND' if supply > 0 else 'NO_ACTIVITY'
+            if supply > 0:
+                return 'NO_DEMAND'  # Have supply but no demand
+            else:
+                return 'NO_ACTIVITY'  # No supply and no demand
+        
+        # When coverage is NaN (shouldn't happen after above check, but safety)
+        if pd.isna(coverage):
+            return 'NO_DEMAND'
         
         # Safety stock checks (if available)
         if 'safety_stock_qty' in row and row['safety_stock_qty'] > 0:
@@ -383,7 +391,8 @@ class GAPCalculator:
             'MODERATE_SURPLUS': f"📦 Surplus {gap:.0f} units, reduce orders",
             'HIGH_SURPLUS': f"⚠️ High surplus {gap:.0f} units, stop ordering",
             'SEVERE_SURPLUS': f"🛑 Severe surplus {gap:.0f} units, cancel orders",
-            'NO_DEMAND': "⭕ No demand, review forecast"
+            'NO_DEMAND': f"⭕ No demand, {gap:.0f} units in stock",
+            'NO_ACTIVITY': "⚪ No supply or demand"
         }
         
         return actions.get(status, "Review manually")
@@ -442,21 +451,27 @@ class GAPCalculator:
         return metrics
     
     def _calculate_overall_coverage(self, gap_df: pd.DataFrame) -> float:
-        """Calculate overall coverage percentage"""
+        """Calculate overall coverage percentage - excluding no-demand items"""
         
-        total_supply = gap_df.get('available_supply', gap_df['total_supply']).sum()
-        total_demand = gap_df['total_demand'].sum()
+        # Filter to items with demand > 0
+        items_with_demand = gap_df[gap_df['total_demand'] > 0]
+        
+        if items_with_demand.empty:
+            return 100.0  # If no items have demand, coverage is not meaningful
+        
+        total_supply = items_with_demand.get('available_supply', items_with_demand['total_supply']).sum()
+        total_demand = items_with_demand['total_demand'].sum()
         
         if total_demand > 0:
             return (total_supply / total_demand) * 100
-        return 100.0 if total_supply == 0 else 999.0
+        return 100.0
     
     def _calculate_customer_impact(
         self,
         gap_df: pd.DataFrame,
         demand_df: pd.DataFrame
     ) -> Optional[CustomerImpact]:
-        """Calculate customer impact for shortage items"""
+        """Calculate customer impact for shortage items using optimized groupby"""
         
         try:
             # Get shortage products
@@ -478,55 +493,49 @@ class GAPCalculator:
                 ['net_gap', 'total_demand', 'at_risk_value_usd', 'coverage_ratio']
             ].to_dict('index')
             
-            # Calculate customer-level impact
-            customer_impact = []
+            # Calculate shortage allocation for each demand row
+            affected_demand['product_shortage'] = affected_demand.apply(
+                lambda row: abs(shortage_lookup.get(row['product_id'], {}).get('net_gap', 0)) *
+                (row['required_quantity'] / shortage_lookup.get(row['product_id'], {}).get('total_demand', 1))
+                if row['product_id'] in shortage_lookup and shortage_lookup[row['product_id']]['total_demand'] > 0
+                else 0,
+                axis=1
+            )
             
-            for customer in affected_demand['customer'].unique():
-                cust_demand = affected_demand[affected_demand['customer'] == customer]
-                
-                # Calculate totals for this customer
-                total_required = cust_demand['required_quantity'].sum()
-                product_count = cust_demand['product_id'].nunique()
-                total_value = cust_demand.get('total_value_usd', pd.Series([0])).sum()
-                
-                # Calculate shortage and risk
-                total_shortage = 0
-                total_risk = 0
-                
-                for product_id in cust_demand['product_id'].unique():
-                    if product_id in shortage_lookup:
-                        product_demand = cust_demand[cust_demand['product_id'] == product_id]['required_quantity'].sum()
-                        product_total_demand = shortage_lookup[product_id]['total_demand']
-                        
-                        if product_total_demand > 0:
-                            share = product_demand / product_total_demand
-                            shortage = abs(shortage_lookup[product_id]['net_gap']) * share
-                            risk = shortage_lookup[product_id].get('at_risk_value_usd', 0) * share
-                            
-                            total_shortage += shortage
-                            total_risk += risk
-                
-                # Get urgency
-                urgency = cust_demand.get('urgency_level', pd.Series(['FUTURE'])).min()
-                
-                # Get customer code
-                customer_code = cust_demand.get('customer_code', pd.Series(['N/A'])).iloc[0]
-                
-                customer_impact.append({
-                    'customer': customer,
-                    'customer_code': customer_code,
-                    'product_count': product_count,
-                    'total_required': total_required,
-                    'total_shortage': total_shortage,
-                    'total_demand_value': total_value,
-                    'at_risk_value': total_risk,
-                    'urgency': urgency,
-                    'products': []  # Could add product details if needed
-                })
+            affected_demand['product_risk'] = affected_demand.apply(
+                lambda row: shortage_lookup.get(row['product_id'], {}).get('at_risk_value_usd', 0) *
+                (row['required_quantity'] / shortage_lookup.get(row['product_id'], {}).get('total_demand', 1))
+                if row['product_id'] in shortage_lookup and shortage_lookup[row['product_id']]['total_demand'] > 0
+                else 0,
+                axis=1
+            )
             
-            # Create dataframe
-            customer_df = pd.DataFrame(customer_impact)
-            customer_df = customer_df.sort_values('at_risk_value', ascending=False)
+            # Use groupby for efficient aggregation
+            customer_agg = affected_demand.groupby('customer').agg({
+                'required_quantity': 'sum',
+                'product_id': 'nunique',
+                'total_value_usd': 'sum',
+                'product_shortage': 'sum',
+                'product_risk': 'sum',
+                'urgency_level': 'min',  # Get most urgent
+                'customer_code': 'first'
+            }).reset_index()
+            
+            # Rename columns for output
+            customer_agg.rename(columns={
+                'required_quantity': 'total_required',
+                'product_id': 'product_count',
+                'total_value_usd': 'total_demand_value',
+                'product_shortage': 'total_shortage',
+                'product_risk': 'at_risk_value',
+                'urgency_level': 'urgency'
+            }, inplace=True)
+            
+            # Sort by at risk value
+            customer_df = customer_agg.sort_values('at_risk_value', ascending=False)
+            
+            # Add empty products list for compatibility
+            customer_df['products'] = [[] for _ in range(len(customer_df))]
             
             return CustomerImpact(
                 customer_df=customer_df,

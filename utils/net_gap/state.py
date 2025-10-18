@@ -1,7 +1,7 @@
 # utils/net_gap/state.py
 
 """
-Simplified state management for GAP Analysis
+Simplified state management for GAP Analysis - Fixed Reset
 """
 
 import streamlit as st
@@ -13,13 +13,14 @@ logger = logging.getLogger(__name__)
 
 
 class GAPState:
-    """Simple state manager - no over-engineering"""
+    """Simple state manager with complete reset functionality"""
     
     # State keys
     KEY_FILTERS = 'gap_filters'
     KEY_RESULT = 'gap_result'
     KEY_PAGE = 'current_page'
     KEY_DIALOG_PAGE = 'dialog_page'
+    KEY_PRODUCT_SELECTION = 'product_selection_state'  # Added key for product selection
     
     def __init__(self):
         self._init_defaults()
@@ -78,10 +79,38 @@ class GAPState:
             logger.info("Filters changed, cleared result")
     
     def reset_filters(self):
-        """Reset to default filters"""
+        """Reset to default filters and clear ALL related state"""
+        # Reset main filters
         st.session_state[self.KEY_FILTERS] = self.get_default_filters()
         st.session_state[self.KEY_RESULT] = None
         st.session_state[self.KEY_PAGE] = 1
+        
+        # Clear product selection state (FIX for the bug)
+        if self.KEY_PRODUCT_SELECTION in st.session_state:
+            del st.session_state[self.KEY_PRODUCT_SELECTION]
+        
+        # Clear any Quick Add related state
+        quick_add_keys = [
+            'quick_add_text',
+            'quick_add_results', 
+            'quick_add_confirmed',
+            'quick_add_cancelled',
+            'show_quick_add'
+        ]
+        for key in quick_add_keys:
+            if key in st.session_state:
+                del st.session_state[key]
+        
+        # Clear dialog states
+        dialog_keys = [
+            'show_customer_dialog',
+            self.KEY_DIALOG_PAGE
+        ]
+        for key in dialog_keys:
+            if key in st.session_state:
+                del st.session_state[key]
+        
+        logger.info("All filters and states reset to defaults")
     
     # GAP Result
     def get_result(self):
@@ -122,12 +151,33 @@ class GAPState:
     
     # Utility
     def clear_all(self):
-        """Clear all state"""
-        for key in [self.KEY_FILTERS, self.KEY_RESULT, self.KEY_PAGE, self.KEY_DIALOG_PAGE]:
+        """Clear ALL state completely"""
+        # List of all possible state keys to clear
+        all_keys = [
+            self.KEY_FILTERS,
+            self.KEY_RESULT,
+            self.KEY_PAGE,
+            self.KEY_DIALOG_PAGE,
+            self.KEY_PRODUCT_SELECTION,
+            'quick_add_text',
+            'quick_add_results',
+            'quick_add_confirmed',
+            'quick_add_cancelled',
+            'show_quick_add',
+            'show_customer_dialog',
+            'quick_filter',
+            'items_per_page',
+            'search'
+        ]
+        
+        # Clear everything
+        for key in all_keys:
             if key in st.session_state:
                 del st.session_state[key]
+        
+        # Re-initialize defaults
         self._init_defaults()
-        logger.info("All state cleared")
+        logger.info("All state completely cleared")
 
 
 # Singleton instance
