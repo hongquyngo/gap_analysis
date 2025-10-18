@@ -1,11 +1,9 @@
 # utils/net_gap/filters.py
 
 """
-Filter Components for GAP Analysis - Version 3.3 IMPROVED LAYOUT
-- Cleaner, more compact filter layout
-- Entity exclusion support added
-- Expired inventory moved to Scope section
-- Simplified labels and better visual hierarchy
+Filter Components for GAP Analysis - Version 3.4 FIXED
+- Fixed exclusion checkbox logic (always enabled)
+- Cleaner state management
 """
 
 import streamlit as st
@@ -21,21 +19,6 @@ logger = logging.getLogger(__name__)
 # Constants
 MAX_MULTISELECT_DISPLAY = 200
 
-QUICK_FILTER_BASE = {
-    'all': {'label': 'All Items', 'help': 'Show all products in the analysis'},
-    'shortage': {'label': 'Shortage', 'help': 'Products with supply below demand'},
-    'balanced': {'label': 'Balanced', 'help': 'Products with balanced supply and demand'},
-    'surplus': {'label': 'Surplus', 'help': 'Products with excess inventory'}
-}
-
-QUICK_FILTER_SAFETY = {
-    'all': {'label': 'All Items', 'help': 'Show all products'},
-    'shortage': {'label': 'Below Requirements', 'help': 'Below demand or safety stock'},
-    'balanced': {'label': 'Balanced', 'help': 'Meeting both demand and safety requirements'},
-    'surplus': {'label': 'Surplus', 'help': 'Excess inventory above safety levels'},
-    'reorder': {'label': 'At Reorder Point', 'help': 'At or below reorder point'}
-}
-
 GROUP_BY_OPTIONS = {
     'product': 'Product',
     'brand': 'Brand'
@@ -49,13 +32,13 @@ SUPPLY_SOURCES = {
 }
 
 DEMAND_SOURCES = {
-    'OC_PENDING': {'name': 'Confirmed Orders', 'icon': '✓', 'desc': 'Customer orders'},
+    'OC_PENDING': {'name': 'Confirmed Orders', 'icon': '✔', 'desc': 'Customer orders'},
     'FORECAST': {'name': 'Customer Forecast', 'icon': '📊', 'desc': 'Predicted demand'}
 }
 
 
 class GAPFilters:
-    """Manages filter UI for GAP analysis with improved layout"""
+    """Manages filter UI for GAP analysis with fixed exclusion logic"""
     
     def __init__(self, data_loader):
         self.data_loader = data_loader
@@ -110,25 +93,6 @@ class GAPFilters:
                 background: linear-gradient(90deg, #f3f4f6 0%, transparent 100%);
                 border-left: 3px solid #3b82f6;
             }
-            .filter-row {
-                display: flex;
-                align-items: center;
-                gap: 8px;
-                margin-bottom: 12px;
-            }
-            .excl-checkbox {
-                min-width: 80px;
-                font-size: 12px;
-            }
-            .info-badge {
-                display: inline-block;
-                padding: 2px 8px;
-                background: #eff6ff;
-                color: #1e40af;
-                border-radius: 12px;
-                font-size: 12px;
-                margin-left: 8px;
-            }
             </style>
         """, unsafe_allow_html=True)
     
@@ -169,11 +133,8 @@ class GAPFilters:
         if filters['exclude_expired_inventory']:
             st.caption("✅ Expired items excluded from analysis")
     
-    def _render_entity_selector_compact(
-        self, 
-        current_filters: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Render entity selector with exclusion checkbox on same row"""
+    def _render_entity_selector_compact(self, current_filters: Dict[str, Any]) -> Dict[str, Any]:
+        """Render entity selector with exclusion checkbox - FIXED logic"""
         try:
             entities_df = self.data_loader.get_entities_formatted()
         except DataLoadError as e:
@@ -219,18 +180,19 @@ class GAPFilters:
         
         with col2:
             st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
+            # FIXED: Always enabled, checkbox determines include/exclude mode
             exclude = st.checkbox(
                 "Excl",
                 value=current_exclude,
                 key="exclude_entity_checkbox",
-                help="Exclude selected entity",
-                disabled=(selected_display == "All Entities")
+                help="Check to EXCLUDE selected entity, uncheck to INCLUDE only selected entity"
             )
         
         # Status caption
         if selected_display != "All Entities":
-            mode = "excluded" if exclude else "selected"
-            st.caption(f"{'🚫' if exclude else '✓'} Entity {mode}")
+            mode = "excluded from analysis" if exclude else "included only"
+            icon = "🚫" if exclude else "✔"
+            st.caption(f"{icon} Entity will be {mode}")
         
         selected_entity = entity_map.get(selected_display) if selected_display != "All Entities" else None
         
@@ -241,7 +203,7 @@ class GAPFilters:
         entity: Optional[str],
         current_filters: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Render product selector with exclusion checkbox on same row"""
+        """Render product selector with exclusion checkbox - FIXED logic"""
         try:
             products_df = self.data_loader.get_products(entity)
         except (DataLoadError, ValidationError) as e:
@@ -284,18 +246,19 @@ class GAPFilters:
         
         with col2:
             st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
+            # FIXED: Always enabled
             exclude = st.checkbox(
                 "Excl",
                 value=exclude_mode,
                 key="exclude_products_checkbox",
-                help="Exclude selected products",
-                disabled=(len(selected) == 0)
+                help="Check to EXCLUDE selected products, uncheck to INCLUDE only selected products"
             )
         
         # Status caption
         if selected:
-            mode = "excluded" if exclude else "selected"
-            st.caption(f"{'🚫' if exclude else '✓'} {len(selected)} products {mode}")
+            mode = "excluded from analysis" if exclude else "included only"
+            icon = "🚫" if exclude else "✔"
+            st.caption(f"{icon} {len(selected)} products will be {mode}")
         
         return {'selected': selected, 'exclude': exclude}
     
@@ -304,7 +267,7 @@ class GAPFilters:
         entity: Optional[str],
         current_filters: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Render brand selector with exclusion checkbox on same row"""
+        """Render brand selector with exclusion checkbox - FIXED logic"""
         try:
             brands = self.data_loader.get_brands(entity)
         except (DataLoadError, ValidationError) as e:
@@ -333,18 +296,19 @@ class GAPFilters:
         
         with col2:
             st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
+            # FIXED: Always enabled
             exclude = st.checkbox(
                 "Excl",
                 value=exclude_mode,
                 key="exclude_brands_checkbox",
-                help="Exclude selected brands",
-                disabled=(len(selected) == 0)
+                help="Check to EXCLUDE selected brands, uncheck to INCLUDE only selected brands"
             )
         
         # Status caption
         if selected:
-            mode = "excluded" if exclude else "selected"
-            st.caption(f"{'🚫' if exclude else '✓'} {len(selected)} brands {mode}")
+            mode = "excluded from analysis" if exclude else "included only"
+            icon = "🚫" if exclude else "✔"
+            st.caption(f"{icon} {len(selected)} brands will be {mode}")
         
         return {'selected': selected, 'exclude': exclude}
     
@@ -594,7 +558,7 @@ class GAPFilters:
         
         # Safety stock
         if filters.get('include_safety_stock'):
-            summary_parts.append("✓ Safety")
+            summary_parts.append("✔ Safety")
         
         # Group by
         group_by = GROUP_BY_OPTIONS.get(filters.get('group_by', 'product'))
@@ -650,3 +614,18 @@ class GAPFilters:
             'demand_sources': ['OC_PENDING'],
             'include_safety_stock': True
         }
+
+QUICK_FILTER_BASE = {
+    'all': {'label': 'All Items', 'help': 'Show all products in the analysis'},
+    'shortage': {'label': 'Shortage', 'help': 'Products with supply below demand'},
+    'balanced': {'label': 'Balanced', 'help': 'Products with balanced supply and demand'},
+    'surplus': {'label': 'Surplus', 'help': 'Products with excess inventory'}
+}
+
+QUICK_FILTER_SAFETY = {
+    'all': {'label': 'All Items', 'help': 'Show all products'},
+    'shortage': {'label': 'Below Requirements', 'help': 'Below demand or safety stock'},
+    'balanced': {'label': 'Balanced', 'help': 'Meeting both demand and safety requirements'},
+    'surplus': {'label': 'Surplus', 'help': 'Excess inventory above safety levels'},
+    'reorder': {'label': 'At Reorder Point', 'help': 'At or below reorder point'}
+}

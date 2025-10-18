@@ -1,12 +1,10 @@
 # pages/1_📊_Net_GAP.py
 
 """
-Net GAP Analysis Page - Version 3.3 OPTIMIZED
-FIXES:
-- Customer dialog now displays data properly
-- Reduced unnecessary reruns
-- Supply N/A changed to 0
-- Better state management
+Net GAP Analysis Page - Version 3.4 CLEANED
+- Simplified visualization (removed tabs)
+- Fixed exclusion logic
+- Cleaned up unused code
 """
 
 import streamlit as st
@@ -48,7 +46,7 @@ from utils.net_gap.field_explanations import show_field_explanations, get_field_
 
 # Constants
 MAX_EXPORT_ROWS = 10000
-VERSION = "3.3"
+VERSION = "3.4"
 
 
 def initialize_components():
@@ -60,7 +58,7 @@ def initialize_components():
     filters = GAPFilters(data_loader)
     charts = GAPCharts(formatter)
     
-    # FIXED: Store formatter in session for dialog access
+    # Store formatter in session for dialog access
     if '_gap_formatter' not in st.session_state:
         st.session_state['_gap_formatter'] = formatter
     
@@ -105,7 +103,7 @@ def load_and_calculate_gap(
     filter_values: Dict[str, Any]
 ):
     """Load data and calculate GAP with full exclusion support"""
-    with st.spinner("📄 Loading data and calculating GAP..."):
+    with st.spinner("🔄 Loading data and calculating GAP..."):
         # Load supply data with all exclusions
         supply_df = data_loader.load_supply_data(
             entity_name=filter_values.get('entity'),
@@ -167,7 +165,6 @@ def load_and_calculate_gap(
 def format_value_for_export(value: Any, field_name: str) -> Any:
     """Format values for Excel export"""
     if pd.isna(value) or value is None:
-        # FIXED: Return 0 for supply-related fields instead of None
         if 'supply' in field_name.lower():
             return 0
         return None
@@ -277,34 +274,6 @@ def export_to_excel(
         
         # Detail sheet
         export_df.to_excel(writer, sheet_name='GAP Details', index=False)
-        
-        # Notes sheet
-        notes_data = pd.DataFrame({
-            'Note': [
-                'EXCLUSION FILTERS',
-                f"- Products: {filters.get('products', []) or 'None'} ({'EXCLUDED' if filters.get('exclude_products') else 'INCLUDED'})",
-                f"- Brands: {filters.get('brands', []) or 'None'} ({'EXCLUDED' if filters.get('exclude_brands') else 'INCLUDED'})",
-                f"- Expired Inventory: {'EXCLUDED' if filters.get('exclude_expired_inventory') else 'INCLUDED'}",
-                '',
-                'SUPPLY DISPLAY',
-                '- N/A changed to 0 for clarity',
-                '- Missing supply values treated as zero',
-                '',
-                'SPECIAL VALUES',
-                '- Blank cells in Safety Coverage or Days of Supply indicate values > 999',
-                '- Blank cells in Coverage Ratio indicate excessive surplus (>10x demand)',
-                '',
-                'STATUS CODES',
-                '- CRITICAL_BREACH: Inventory below 50% of safety stock',
-                '- BELOW_SAFETY: Inventory below safety stock level',
-                '- SEVERE_SHORTAGE: Coverage < 50%',
-                '- HIGH_SHORTAGE: Coverage 50-70%',
-                '- MODERATE_SHORTAGE: Coverage 70-90%',
-                '- BALANCED: Coverage 90-110%',
-                '- SURPLUS: Coverage > 110%'
-            ]
-        })
-        notes_data.to_excel(writer, sheet_name='Notes', index=False)
     
     output.seek(0)
     logger.info("Excel export generated successfully")
@@ -318,10 +287,10 @@ def format_coverage_value(row: pd.Series) -> str:
     supply = row.get('total_supply', 0)
     
     if pd.isna(ratio):
-        return "–"
+        return "—"
     
     if demand == 0:
-        return "No Demand" if supply > 0 else "–"
+        return "No Demand" if supply > 0 else "—"
     
     if supply == 0:
         return "0%"
@@ -365,7 +334,7 @@ def prepare_display_dataframe(
     
     display_df['Status'] = display_df['gap_status'].map(status_display).fillna('❓ Unknown')
     
-    # FIXED: Format supply - show 0 instead of N/A
+    # Format supply - show 0 instead of N/A
     if 'total_supply' in display_df.columns:
         display_df['Supply'] = display_df['total_supply'].apply(
             lambda x: formatter.format_number(x) if pd.notna(x) else "0"
@@ -508,7 +477,7 @@ def display_paginated_table(
         col1, col2, col3, col4, col5 = st.columns([1, 1, 3, 1, 1])
         
         with col1:
-            if st.button("⮈", disabled=(page == 1), use_container_width=True, key=f"{key_prefix}_first"):
+            if st.button("⏮", disabled=(page == 1), use_container_width=True, key=f"{key_prefix}_first"):
                 session_manager.set_current_page(1, total_pages)
                 st.rerun()
         
@@ -532,7 +501,7 @@ def display_paginated_table(
                 st.rerun()
         
         with col5:
-            if st.button("⭆", disabled=(page == total_pages), use_container_width=True, key=f"{key_prefix}_last"):
+            if st.button("⏭", disabled=(page == total_pages), use_container_width=True, key=f"{key_prefix}_last"):
                 session_manager.set_current_page(total_pages, total_pages)
                 st.rerun()
 
@@ -556,7 +525,7 @@ def display_data_table(
     
     filter_options = QUICK_FILTER_SAFETY if include_safety else QUICK_FILTER_BASE
     
-    # FIXED: Use session state to avoid unnecessary reruns
+    # Use session state to avoid unnecessary reruns
     if 'quick_filter_selection' not in st.session_state:
         st.session_state['quick_filter_selection'] = 'all'
     
@@ -591,7 +560,6 @@ def display_data_table(
     # Help Section
     help_col1, help_col2, help_col3 = st.columns([1, 3, 1])
     with help_col1:
-        # FIXED: Toggle without rerun
         show_formulas = st.toggle(
             "📖 View Formulas",
             key="show_formulas_toggle",
@@ -630,7 +598,7 @@ def display_data_table(
             new_config['financial'] = st.checkbox("Financial", value=col_config['financial'], key="col_financial")
             new_config['details'] = st.checkbox("Details", value=col_config['details'], key="col_details")
         
-        # FIXED: Only update if changed
+        # Only update if changed
         if new_config != col_config:
             session_manager.set_table_columns_config(new_config)
         
@@ -726,9 +694,69 @@ def render_action_buttons(session_manager, filters) -> Tuple[bool, bool]:
     with col3:
         active_count = filters.count_active_filters()
         if active_count > 0:
-            st.info(f"✓ {active_count} filters active")
+            st.info(f"✔ {active_count} filters active")
     
     return calculate_clicked, force_recalc
+
+
+def display_visual_analysis(result, charts, include_safety: bool) -> None:
+    """Display simplified visual analysis without tabs"""
+    st.subheader("📊 Visual Analysis")
+    
+    # Status Distribution
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if not result.gap_df.empty:
+            fig_pie = charts.create_status_pie_chart(result.gap_df)
+            st.plotly_chart(fig_pie, use_container_width=True)
+    
+    # Top items selector
+    with col2:
+        top_n = st.number_input(
+            "Number of top items to display", 
+            min_value=5, 
+            max_value=20, 
+            value=10,
+            key="top_n_items"
+        )
+    
+    # Shortages and Surplus in one row
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("#### 📉 Top Shortages")
+        
+        if include_safety:
+            shortage_statuses = [
+                'SEVERE_SHORTAGE', 'HIGH_SHORTAGE', 'MODERATE_SHORTAGE',
+                'BELOW_SAFETY', 'CRITICAL_BREACH'
+            ]
+        else:
+            shortage_statuses = ['SEVERE_SHORTAGE', 'HIGH_SHORTAGE', 'MODERATE_SHORTAGE']
+        
+        shortage_df = result.gap_df[result.gap_df['gap_status'].isin(shortage_statuses)]
+        
+        if not shortage_df.empty:
+            fig_shortage = charts.create_top_shortage_bar_chart(shortage_df, top_n=top_n)
+            st.plotly_chart(fig_shortage, use_container_width=True)
+        else:
+            st.info("No shortage items to display")
+    
+    with col2:
+        st.markdown("#### 📈 Top Surplus")
+        
+        surplus_statuses = [
+            'SEVERE_SURPLUS', 'HIGH_SURPLUS', 'MODERATE_SURPLUS', 'LIGHT_SURPLUS'
+        ]
+        
+        surplus_df = result.gap_df[result.gap_df['gap_status'].isin(surplus_statuses)]
+        
+        if not surplus_df.empty:
+            fig_surplus = charts.create_top_surplus_bar_chart(surplus_df, top_n=top_n)
+            st.plotly_chart(fig_surplus, use_container_width=True)
+        else:
+            st.info("No surplus items to display")
 
 
 def main():
@@ -753,7 +781,7 @@ def main():
         auth_manager.logout()
         st.rerun()
     
-    # FIXED: Check dialog state properly and only show when explicitly requested
+    # Check dialog state properly and only show when explicitly requested
     if session_manager.show_customer_dialog():
         result = session_manager.get_gap_result()
         if result and result.customer_impact and not result.customer_impact.is_empty():
@@ -836,51 +864,8 @@ def main():
         
         st.divider()
         
-        # Visualizations
-        st.subheader("📊 Visual Analysis")
-        
-        tab1, tab2, tab3, tab4 = st.tabs([
-            "📊 Status Distribution", 
-            "📉 Top Shortages", 
-            "📈 Supply vs Demand", 
-            "🔍 Coverage Analysis"
-        ])
-        
-        with tab1:
-            if not result.gap_df.empty:
-                fig_pie = charts.create_status_pie_chart(result.gap_df)
-                st.plotly_chart(fig_pie, use_container_width=True)
-        
-        with tab2:
-            col1, col2 = st.columns([3, 1])
-            with col2:
-                top_n = st.number_input("Top N items", min_value=5, max_value=20, value=10)
-            
-            if include_safety:
-                shortage_statuses = [
-                    'SEVERE_SHORTAGE', 'HIGH_SHORTAGE', 'MODERATE_SHORTAGE',
-                    'BELOW_SAFETY', 'CRITICAL_BREACH'
-                ]
-            else:
-                shortage_statuses = ['SEVERE_SHORTAGE', 'HIGH_SHORTAGE', 'MODERATE_SHORTAGE']
-            
-            shortage_df = result.gap_df[result.gap_df['gap_status'].isin(shortage_statuses)]
-            
-            if not shortage_df.empty:
-                fig_bar = charts.create_top_shortage_bar_chart(shortage_df, top_n=top_n)
-                st.plotly_chart(fig_bar, use_container_width=True)
-            else:
-                st.info("No shortage items to display")
-        
-        with tab3:
-            if not result.gap_df.empty:
-                fig_comparison = charts.create_supply_demand_comparison(result.gap_df, top_n=15)
-                st.plotly_chart(fig_comparison, use_container_width=True)
-        
-        with tab4:
-            if not result.gap_df.empty:
-                fig_coverage = charts.create_coverage_distribution(result.gap_df)
-                st.plotly_chart(fig_coverage, use_container_width=True)
+        # Simplified visual analysis (no tabs)
+        display_visual_analysis(result, charts, include_safety)
         
         st.divider()
         

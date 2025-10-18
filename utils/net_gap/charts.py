@@ -1,10 +1,10 @@
 # utils/net_gap/charts.py
 
 """
-Visualization Module - Version 3.3 FIXED
-- Fixed abs_gap dtype bug (convert to numeric before abs)
-- Updated to work with GAPCalculationResult
-- Consistent with new data flow
+Visualization Module - Version 3.4 CLEANED
+- Removed unused charts (coverage distribution, supply vs demand)
+- Added top surplus chart
+- Simplified chart functions
 """
 
 import pandas as pd
@@ -260,7 +260,7 @@ class GAPCharts:
             )
         ])
         
-        title = 'Distribution by GAP Status'
+        title = 'GAP Status Distribution'
         if self._include_safety:
             title += ' (Including Safety Stock)'
         
@@ -279,28 +279,22 @@ class GAPCharts:
         gap_df: pd.DataFrame, 
         top_n: int = 10
     ) -> go.Figure:
-        """
-        Create bar chart showing top shortage items
-        FIXED: Convert net_gap to numeric before calculating abs_gap
-        """
+        """Create bar chart showing top shortage items"""
         if gap_df.empty:
             return self._create_empty_chart("No shortage items")
         
         shortage_df = gap_df.copy()
         
-        # FIX: Convert net_gap to numeric first to avoid dtype object error
+        # Convert net_gap to numeric first to avoid dtype object error
         shortage_df['net_gap'] = pd.to_numeric(shortage_df['net_gap'], errors='coerce').fillna(0)
         
-        # Now safe to calculate absolute value
+        # Filter shortage items (negative gap)
+        shortage_df = shortage_df[shortage_df['net_gap'] < 0].copy()
         shortage_df['abs_gap'] = shortage_df['net_gap'].abs()
         
-        # Filter out zero gaps
-        shortage_df = shortage_df[shortage_df['abs_gap'] > 0]
-        
         if shortage_df.empty:
-            return self._create_empty_chart("No shortage items with non-zero gap")
+            return self._create_empty_chart("No shortage items found")
         
-        # Now nlargest will work properly
         top_items = shortage_df.nlargest(min(top_n, len(shortage_df)), 'abs_gap')
         
         display_names = self._prepare_display_names(top_items)
@@ -332,122 +326,51 @@ class GAPCharts:
         
         return fig
     
-    def create_supply_demand_comparison(
+    def create_top_surplus_bar_chart(
         self, 
         gap_df: pd.DataFrame, 
-        top_n: int = 15
+        top_n: int = 10
     ) -> go.Figure:
-        """Create grouped bar chart comparing supply vs demand"""
+        """Create bar chart showing top surplus items"""
         if gap_df.empty:
-            return self._create_empty_chart("No data to compare")
+            return self._create_empty_chart("No surplus items")
         
-        gap_df_sorted = gap_df.copy()
+        surplus_df = gap_df.copy()
         
-        # FIX: Convert net_gap to numeric first
-        gap_df_sorted['net_gap'] = pd.to_numeric(gap_df_sorted['net_gap'], errors='coerce').fillna(0)
-        gap_df_sorted['abs_gap'] = gap_df_sorted['net_gap'].abs()
+        # Convert net_gap to numeric first
+        surplus_df['net_gap'] = pd.to_numeric(surplus_df['net_gap'], errors='coerce').fillna(0)
         
-        # Filter valid data
-        gap_df_sorted = gap_df_sorted[gap_df_sorted['abs_gap'] > 0]
+        # Filter surplus items (positive gap)
+        surplus_df = surplus_df[surplus_df['net_gap'] > 0].copy()
         
-        if gap_df_sorted.empty:
-            return self._create_empty_chart("No items with non-zero gap")
+        if surplus_df.empty:
+            return self._create_empty_chart("No surplus items found")
         
-        top_items = gap_df_sorted.nlargest(min(top_n, len(gap_df_sorted)), 'abs_gap')
+        top_items = surplus_df.nlargest(min(top_n, len(surplus_df)), 'net_gap')
         
-        display_names = self._prepare_short_names(top_items)
-        
-        fig = go.Figure()
-        
-        # Supply bars
-        if self._include_safety and 'available_supply' in top_items.columns:
-            supply_values = pd.to_numeric(top_items['available_supply'], errors='coerce').fillna(0)
-            supply_label = 'Available Supply'
-        else:
-            supply_values = pd.to_numeric(top_items['total_supply'], errors='coerce').fillna(0)
-            supply_label = 'Total Supply'
-        
-        fig.add_trace(go.Bar(
-            name=supply_label,
-            x=display_names,
-            y=supply_values,
-            marker_color='#0088FF',
-            text=supply_values.apply(lambda x: self.formatter.format_number(x)),
-            textposition='outside'
-        ))
-        
-        # Demand bars
-        demand_values = pd.to_numeric(top_items['total_demand'], errors='coerce').fillna(0)
-        
-        fig.add_trace(go.Bar(
-            name='Total Demand',
-            x=display_names,
-            y=demand_values,
-            marker_color='#FF8800',
-            text=demand_values.apply(lambda x: self.formatter.format_number(x)),
-            textposition='outside'
-        ))
-        
-        # Safety stock line
-        if self._include_safety and 'safety_stock_qty' in top_items.columns:
-            safety_values = pd.to_numeric(top_items['safety_stock_qty'], errors='coerce').fillna(0)
-            
-            fig.add_trace(go.Scatter(
-                name='Safety Stock',
-                x=display_names,
-                y=safety_values,
-                mode='lines+markers',
-                line=dict(color='red', dash='dash'),
-                marker=dict(size=8)
-            ))
-        
-        fig.update_layout(
-            title={'text': 'Supply vs Demand Comparison', 'x': 0.5, 'xanchor': 'center'},
-            xaxis_title="Product",
-            yaxis_title="Quantity (units)",
-            barmode='group',
-            height=500,
-            xaxis_tickangle=-45,
-            font=dict(family=CHART_THEME['font_family'], size=CHART_THEME['font_size']),
-            paper_bgcolor=CHART_THEME['background_color']
-        )
-        
-        return fig
-    
-    def create_coverage_distribution(self, gap_df: pd.DataFrame) -> go.Figure:
-        """Create histogram showing coverage distribution"""
-        if gap_df.empty:
-            return self._create_empty_chart("No data")
-        
-        # Convert coverage_ratio to numeric
-        coverage_ratio = pd.to_numeric(gap_df['coverage_ratio'], errors='coerce')
-        coverage_data = coverage_ratio[coverage_ratio < 10] * 100
-        
-        # Remove NaN values
-        coverage_data = coverage_data.dropna()
-        
-        if coverage_data.empty:
-            return self._create_empty_chart("No valid coverage data")
+        display_names = self._prepare_display_names(top_items)
+        colors = [STATUS_COLORS.get(status, '#0088FF') for status in top_items['gap_status']]
         
         fig = go.Figure(data=[
-            go.Histogram(
-                x=coverage_data,
-                nbinsx=30,
-                marker_color='#0088FF',
-                hovertemplate='Coverage: %{x:.0f}%<br>Count: %{y}<extra></extra>'
+            go.Bar(
+                x=top_items['net_gap'],
+                y=display_names,
+                orientation='h',
+                marker=dict(color=colors, line=dict(width=1, color='rgba(0,0,0,0.3)')),
+                text=top_items['net_gap'].apply(lambda x: self.formatter.format_number(x)),
+                textposition='outside',
+                hovertemplate='<b>%{y}</b><br>Surplus: %{x:,.0f} units<br><extra></extra>'
             )
         ])
         
-        fig.add_vline(x=100, line_dash="dash", line_color="green", annotation_text="Target (100%)")
-        
-        if self._include_safety:
-            fig.add_vline(x=90, line_dash="dot", line_color="orange", annotation_text="Min Safe (90%)")
+        chart_height = self._calculate_dynamic_height(len(top_items))
         
         fig.update_layout(
-            title={'text': 'Coverage Ratio Distribution', 'x': 0.5, 'xanchor': 'center'},
-            xaxis_title="Coverage (%)",
-            yaxis_title="Number of Products",
-            height=CHART_HEIGHT_DEFAULT,
+            title={'text': f'Top {len(top_items)} Surplus Items', 'x': 0.5, 'xanchor': 'center'},
+            xaxis_title="Surplus Quantity (units)",
+            height=chart_height,
+            yaxis=dict(autorange="reversed"),
+            margin=dict(l=200),
             font=dict(family=CHART_THEME['font_family'], size=CHART_THEME['font_size']),
             paper_bgcolor=CHART_THEME['background_color']
         )
@@ -510,15 +433,6 @@ class GAPCharts:
                 lambda x: f"{x['pt_code']} - {x['product_name'][:25]}{'...' if len(str(x['product_name'])) > 25 else ''}",
                 axis=1
             ).tolist()
-        elif 'brand' in df.columns:
-            return df['brand'].tolist()
-        else:
-            return df.index.astype(str).tolist()
-    
-    def _prepare_short_names(self, df: pd.DataFrame) -> List[str]:
-        """Prepare short names for x-axis"""
-        if 'pt_code' in df.columns:
-            return df['pt_code'].tolist()
         elif 'brand' in df.columns:
             return df['brand'].tolist()
         else:
