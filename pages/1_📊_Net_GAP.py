@@ -1,11 +1,12 @@
 # pages/1_📊_Net_GAP.py
 
 """
-Net GAP Analysis Page - Version 3.2 ENHANCED
-- Added exclusion support for products, brands, and expired inventory
-- Fixed customer dialog auto-popup bug
-- Enhanced product and entity display formatting
-- Improved state management and error handling
+Net GAP Analysis Page - Version 3.3 OPTIMIZED
+FIXES:
+- Customer dialog now displays data properly
+- Reduced unnecessary reruns
+- Supply N/A changed to 0
+- Better state management
 """
 
 import streamlit as st
@@ -47,7 +48,7 @@ from utils.net_gap.field_explanations import show_field_explanations, get_field_
 
 # Constants
 MAX_EXPORT_ROWS = 10000
-VERSION = "3.2"
+VERSION = "3.3"
 
 
 def initialize_components():
@@ -58,6 +59,10 @@ def initialize_components():
     formatter = GAPFormatter()
     filters = GAPFilters(data_loader)
     charts = GAPCharts(formatter)
+    
+    # FIXED: Store formatter in session for dialog access
+    if '_gap_formatter' not in st.session_state:
+        st.session_state['_gap_formatter'] = formatter
     
     return session_manager, data_loader, calculator, formatter, filters, charts
 
@@ -88,8 +93,10 @@ def handle_error(e: Exception) -> None:
     else:
         st.error(f"❌ An error occurred: {error_type}")
     
-    with st.expander("Error Details", expanded=False):
-        st.code(str(e))
+    # Only show details in debug mode
+    if os.getenv('DEBUG_MODE') == 'true':
+        with st.expander("Error Details", expanded=False):
+            st.code(str(e))
 
 
 def load_and_calculate_gap(
@@ -97,13 +104,8 @@ def load_and_calculate_gap(
     calculator: GAPCalculator,
     filter_values: Dict[str, Any]
 ):
-    """
-    Load data and calculate GAP with full exclusion support
-    
-    Returns:
-        GAPCalculationResult object
-    """
-    with st.spinner("🔄 Loading data and calculating GAP..."):
+    """Load data and calculate GAP with full exclusion support"""
+    with st.spinner("📄 Loading data and calculating GAP..."):
         # Load supply data with all exclusions
         supply_df = data_loader.load_supply_data(
             entity_name=filter_values.get('entity'),
@@ -161,9 +163,13 @@ def load_and_calculate_gap(
         
         return result
 
+
 def format_value_for_export(value: Any, field_name: str) -> Any:
-    """Format values for Excel export (fix 999 issue)"""
+    """Format values for Excel export"""
     if pd.isna(value) or value is None:
+        # FIXED: Return 0 for supply-related fields instead of None
+        if 'supply' in field_name.lower():
+            return 0
         return None
     
     if field_name == 'safety_coverage':
@@ -227,7 +233,7 @@ def export_to_excel(
             )
     
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # Summary sheet with exclusion info
+        # Summary sheet
         summary_rows = [
             ('Report Generated', datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
             ('', ''),
@@ -280,6 +286,10 @@ def export_to_excel(
                 f"- Brands: {filters.get('brands', []) or 'None'} ({'EXCLUDED' if filters.get('exclude_brands') else 'INCLUDED'})",
                 f"- Expired Inventory: {'EXCLUDED' if filters.get('exclude_expired_inventory') else 'INCLUDED'}",
                 '',
+                'SUPPLY DISPLAY',
+                '- N/A changed to 0 for clarity',
+                '- Missing supply values treated as zero',
+                '',
                 'SPECIAL VALUES',
                 '- Blank cells in Safety Coverage or Days of Supply indicate values > 999',
                 '- Blank cells in Coverage Ratio indicate excessive surplus (>10x demand)',
@@ -297,7 +307,7 @@ def export_to_excel(
         notes_data.to_excel(writer, sheet_name='Notes', index=False)
     
     output.seek(0)
-    logger.info("Excel export generated successfully with exclusion info")
+    logger.info("Excel export generated successfully")
     return output.getvalue()
 
 
@@ -355,9 +365,11 @@ def prepare_display_dataframe(
     
     display_df['Status'] = display_df['gap_status'].map(status_display).fillna('❓ Unknown')
     
-    # Format numeric columns
+    # FIXED: Format supply - show 0 instead of N/A
     if 'total_supply' in display_df.columns:
-        display_df['Supply'] = display_df['total_supply'].apply(formatter.format_number)
+        display_df['Supply'] = display_df['total_supply'].apply(
+            lambda x: formatter.format_number(x) if pd.notna(x) else "0"
+        )
     
     if 'total_demand' in display_df.columns:
         display_df['Demand'] = display_df['total_demand'].apply(formatter.format_number)
@@ -544,6 +556,10 @@ def display_data_table(
     
     filter_options = QUICK_FILTER_SAFETY if include_safety else QUICK_FILTER_BASE
     
+    # FIXED: Use session state to avoid unnecessary reruns
+    if 'quick_filter_selection' not in st.session_state:
+        st.session_state['quick_filter_selection'] = 'all'
+    
     quick_filter = st.radio(
         "Select filter view",
         options=list(filter_options.keys()),
@@ -551,14 +567,16 @@ def display_data_table(
         horizontal=True,
         label_visibility="collapsed",
         key="quick_filter_radio",
-        help="Filter displayed results by status"
+        help="Filter displayed results by status",
+        index=list(filter_options.keys()).index(st.session_state['quick_filter_selection'])
     )
     
-    st.caption(f"ℹ️ {filter_options[quick_filter]['help']}")
-    
-    if st.session_state.get('_last_quick_filter') != quick_filter:
+    # Update session state without rerun
+    if quick_filter != st.session_state.get('quick_filter_selection'):
+        st.session_state['quick_filter_selection'] = quick_filter
         session_manager.reset_pagination()
-        st.session_state['_last_quick_filter'] = quick_filter
+    
+    st.caption(f"ℹ️ {filter_options[quick_filter]['help']}")
     
     original_count = len(gap_df)
     if quick_filter != 'all':
@@ -573,8 +591,13 @@ def display_data_table(
     # Help Section
     help_col1, help_col2, help_col3 = st.columns([1, 3, 1])
     with help_col1:
-        if st.button("📖 View Formulas", use_container_width=True, key="show_formulas"):
-            st.session_state['show_formulas'] = not st.session_state.get('show_formulas', False)
+        # FIXED: Toggle without rerun
+        show_formulas = st.toggle(
+            "📖 View Formulas",
+            key="show_formulas_toggle",
+            value=st.session_state.get('show_formulas', False)
+        )
+        st.session_state['show_formulas'] = show_formulas
     
     if st.session_state.get('show_formulas', False):
         with st.container():
@@ -607,7 +630,9 @@ def display_data_table(
             new_config['financial'] = st.checkbox("Financial", value=col_config['financial'], key="col_financial")
             new_config['details'] = st.checkbox("Details", value=col_config['details'], key="col_details")
         
-        session_manager.set_table_columns_config(new_config)
+        # FIXED: Only update if changed
+        if new_config != col_config:
+            session_manager.set_table_columns_config(new_config)
         
         st.markdown("**Quick presets:**")
         preset_cols = st.columns(4)
@@ -728,13 +753,13 @@ def main():
         auth_manager.logout()
         st.rerun()
     
-    # FIXED: Check dialog state properly
+    # FIXED: Check dialog state properly and only show when explicitly requested
     if session_manager.show_customer_dialog():
         result = session_manager.get_gap_result()
-        if result and result.customer_impact:
+        if result and result.customer_impact and not result.customer_impact.is_empty():
             show_customer_popup()
         else:
-            logger.warning("Customer dialog requested but no customer impact data")
+            logger.warning("Customer dialog requested but no customer impact data available")
             session_manager.close_customer_dialog()
     
     # Render filters

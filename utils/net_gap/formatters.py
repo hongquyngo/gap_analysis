@@ -1,10 +1,11 @@
 # utils/net_gap/formatters.py
 
 """
-Formatting Module - Version 3.0 ENHANCED
-- Added export formatting (fix 999 values)
-- Support for multiple format modes
-- Clean handling of special cases
+Formatting Module - Version 3.3 FIXED
+FIXES:
+- Supply N/A changed to 0 (more intuitive)
+- Better handling of None/NaN for different field types
+- Consistent zero display for supply-related fields
 """
 
 import pandas as pd
@@ -26,6 +27,14 @@ NUMBER_ABBREVIATIONS = [
     (1e3, 'K'),
 ]
 
+# FIXED: Fields that should display 0 instead of N/A when empty
+ZERO_DEFAULT_FIELDS = {
+    'supply', 'total_supply', 'available_supply', 
+    'supply_inventory', 'supply_can_pending',
+    'supply_warehouse_transfer', 'supply_purchase_order',
+    'safety_stock_qty', 'reorder_point'
+}
+
 
 class GAPFormatter:
     """Handles formatting for GAP analysis display and export"""
@@ -35,7 +44,8 @@ class GAPFormatter:
         value: Union[float, int, None], 
         decimals: int = DEFAULT_DECIMAL_PLACES,
         show_sign: bool = False,
-        abbreviate: bool = False
+        abbreviate: bool = False,
+        field_name: str = None  # FIXED: Added field name to determine default behavior
     ) -> str:
         """
         Format number with thousand separators
@@ -45,11 +55,15 @@ class GAPFormatter:
             decimals: Decimal places
             show_sign: Show + for positive
             abbreviate: Use K/M/B notation
+            field_name: Optional field name to determine if 0 should be shown instead of N/A
             
         Returns:
             Formatted string
         """
+        # FIXED: Check if this is a supply field that should show 0
         if pd.isna(value) or value is None:
+            if field_name and any(zero_field in field_name.lower() for zero_field in ZERO_DEFAULT_FIELDS):
+                return "0"
             return "N/A"
         
         # Abbreviation for large numbers
@@ -164,13 +178,16 @@ class GAPFormatter:
         
         Args:
             value: Value to format
-            field_type: Type of field ('coverage', 'days', 'ratio', 'number', 'currency')
+            field_type: Type of field ('coverage', 'days', 'ratio', 'number', 'currency', 'supply')
             max_value_threshold: Values >= this become None
             
         Returns:
-            Excel-friendly value (None for blanks)
+            Excel-friendly value (None for blanks, 0 for supply fields)
         """
+        # FIXED: Supply fields should be 0, not None
         if pd.isna(value) or value is None:
+            if field_type == 'supply':
+                return 0
             return None
         
         # Handle special cases based on field type
@@ -208,6 +225,10 @@ class GAPFormatter:
             # Currency values
             return round(value, 2) if isinstance(value, float) else value
         
+        elif field_type == 'supply':
+            # FIXED: Supply should always be a number (0 if missing)
+            return round(value, 2) if isinstance(value, float) else (value if value else 0)
+        
         else:
             # Default: return as-is for numeric, None for extreme values
             if isinstance(value, (int, float)):
@@ -224,6 +245,7 @@ class GAPFormatter:
     ) -> str:
         """
         Format value for UI display
+        FIXED: Supply fields show 0 instead of N/A
         
         Args:
             value: Value to format
@@ -233,11 +255,14 @@ class GAPFormatter:
         Returns:
             Formatted display string
         """
-        if pd.isna(value) or value is None:
-            return "—"
-        
         if formatter_instance is None:
             formatter_instance = GAPFormatter()
+        
+        # FIXED: Supply fields should show 0, not "–"
+        if pd.isna(value) or value is None:
+            if any(zero_field in field_name.lower() for zero_field in ZERO_DEFAULT_FIELDS):
+                return "0"
+            return "–"
         
         # Map field names to format types
         if field_name in ['safety_coverage', 'safety_cov']:
@@ -264,12 +289,58 @@ class GAPFormatter:
             return formatter_instance.format_currency(value, abbreviate=True)
         
         elif 'quantity' in field_name.lower() or 'qty' in field_name.lower():
-            return formatter_instance.format_number(value)
+            return formatter_instance.format_number(value, field_name=field_name)
+        
+        # FIXED: Supply-specific formatting
+        elif any(zero_field in field_name.lower() for zero_field in ZERO_DEFAULT_FIELDS):
+            return formatter_instance.format_number(value, field_name=field_name)
         
         else:
             # Default formatting
             if isinstance(value, float):
                 return f"{value:.2f}"
             elif isinstance(value, int):
-                return formatter_instance.format_number(value)
+                return formatter_instance.format_number(value, field_name=field_name)
             return str(value)
+    
+    @staticmethod
+    def format_supply_value(value: Any) -> str:
+        """
+        FIXED: Specific formatter for supply values
+        Always shows 0 instead of N/A for better clarity
+        
+        Args:
+            value: Supply value to format
+            
+        Returns:
+            Formatted string (0 for None/NaN, formatted number otherwise)
+        """
+        if pd.isna(value) or value is None or value == 0:
+            return "0"
+        
+        if isinstance(value, float):
+            return f"{int(value):,}" if value.is_integer() else f"{value:,.2f}"
+        
+        return f"{int(value):,}"
+    
+    @staticmethod
+    def format_demand_value(value: Any) -> str:
+        """
+        Format demand values (can show N/A if no demand)
+        
+        Args:
+            value: Demand value to format
+            
+        Returns:
+            Formatted string
+        """
+        if pd.isna(value) or value is None:
+            return "N/A"
+        
+        if value == 0:
+            return "0"
+        
+        if isinstance(value, float):
+            return f"{int(value):,}" if value.is_integer() else f"{value:,.2f}"
+        
+        return f"{int(value):,}"

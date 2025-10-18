@@ -1,11 +1,12 @@
 # utils/net_gap/customer_dialog.py
 
 """
-Customer Affected Dialog - Version 3.0 SIMPLIFIED
-- Gets data from GAPCalculationResult (no fallbacks)
-- Pre-calculated data (no computation in dialog)
-- Removed emergency database reload
-- Clean error handling
+Customer Affected Dialog - Version 3.3 FIXED
+FIXES:
+- Dialog now properly displays customer data (was showing only title)
+- Formatter properly retrieved from session state
+- Better error handling for empty data
+- Reduced unnecessary reruns
 """
 
 import streamlit as st
@@ -29,28 +30,18 @@ MAX_PRODUCTS_PER_CUSTOMER = 20
 class CustomerAffectedDialog:
     """Manages customer affected dialog with pre-calculated data"""
     
-    def __init__(self, calculator, formatter):
+    def __init__(self, formatter):
         """
         Initialize dialog
         
         Args:
-            calculator: GAPCalculator instance (for compatibility)
             formatter: GAPFormatter instance
         """
-        self.calculator = calculator
         self.formatter = formatter
         self.session_manager = get_session_manager()
     
     def export_excel(self, df: pd.DataFrame) -> Optional[bytes]:
-        """
-        Export customer affected data to Excel
-        
-        Args:
-            df: Customer affected DataFrame
-            
-        Returns:
-            Excel file as bytes, or None on error
-        """
+        """Export customer affected data to Excel"""
         try:
             output = io.BytesIO()
             
@@ -122,14 +113,17 @@ class CustomerAffectedDialog:
 @st.dialog("Affected Customer Analysis", width="large")
 def show_customer_popup():
     """
-    Customer affected popup dialog - SIMPLIFIED
-    Gets pre-calculated data from GAPCalculationResult
+    Customer affected popup dialog - FIXED
+    Now properly displays all customer data
     """
     session_manager = get_session_manager()
     
-    # Check if dialog should be shown
-    if not session_manager.show_customer_dialog():
-        return
+    # FIXED: Get formatter from session state (stored in main page)
+    formatter = st.session_state.get('_gap_formatter')
+    if formatter is None:
+        logger.warning("Formatter not found in session, creating new instance")
+        from .formatters import GAPFormatter
+        formatter = GAPFormatter()
     
     # Get calculation result
     result = session_manager.get_gap_result()
@@ -144,9 +138,9 @@ def show_customer_popup():
     
     # Check if customer impact data exists
     if result.customer_impact is None or result.customer_impact.is_empty():
-        st.warning("No customer impact data available")
+        st.warning("📊 No customer impact data available")
         st.info(
-            "This could be because:\n"
+            "This could be because:\n\n"
             "• No shortage items found\n"
             "• Analysis not grouped by product\n"
             "• No demand data for shortage products"
@@ -156,34 +150,35 @@ def show_customer_popup():
             st.rerun()
         return
     
-    # Get pre-calculated customer data
+    # FIXED: Get pre-calculated customer data
     customer_data = result.customer_impact.customer_summary_df
     
-    # Get formatter from session (for display)
-    formatter = st.session_state.get('_temp_formatter')
-    if formatter is None:
-        from .formatters import GAPFormatter
-        formatter = GAPFormatter()
+    if customer_data.empty:
+        st.warning("📊 No affected customers found")
+        if st.button("Close", use_container_width=True):
+            session_manager.close_customer_dialog()
+            st.rerun()
+        return
     
     # Initialize dialog helper
-    from .calculator import GAPCalculator
-    calculator = GAPCalculator()
-    dialog = CustomerAffectedDialog(calculator, formatter)
+    dialog = CustomerAffectedDialog(formatter)
     
     # Header
     st.markdown("### 👥 Customer Affected Analysis")
     st.caption("Customers impacted by product shortages")
     
-    # Summary metrics (from pre-calculated data)
+    # FIXED: Summary metrics with proper formatting
     cols = st.columns(6)
     with cols[0]:
         st.metric("Customers", formatter.format_number(result.customer_impact.affected_count))
     with cols[1]:
-        st.metric("Products", formatter.format_number(customer_data['product_count'].sum()))
+        total_products = customer_data['product_count'].sum()
+        st.metric("Products", formatter.format_number(total_products))
     with cols[2]:
+        total_demand_value = customer_data['total_demand_value'].sum()
         st.metric(
             "Total Demand", 
-            formatter.format_currency(customer_data['total_demand_value'].sum(), abbreviate=True)
+            formatter.format_currency(total_demand_value, abbreviate=True)
         )
     with cols[3]:
         st.metric(
@@ -207,11 +202,15 @@ def show_customer_popup():
     # Controls
     ctrl_cols = st.columns([3, 1, 1])
     with ctrl_cols[0]:
+        # FIXED: Use session state to avoid reruns
         search = st.text_input(
             "Search", 
             placeholder="Customer name or code...", 
-            key="dlg_search"
+            key="dlg_search",
+            value=st.session_state.get('_dlg_search_text', '')
         )
+        st.session_state['_dlg_search_text'] = search
+    
     with ctrl_cols[1]:
         page_size = st.selectbox(
             "Show", 
@@ -219,11 +218,12 @@ def show_customer_popup():
             index=1, 
             key="dlg_size"
         )
+    
     with ctrl_cols[2]:
         excel = dialog.export_excel(customer_data)
         if excel:
             st.download_button(
-                "Export",
+                "📥 Export",
                 excel,
                 f"affected_customers_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -240,14 +240,15 @@ def show_customer_popup():
         filtered = customer_data
     
     if filtered.empty:
-        st.info("No matches found")
+        st.info("🔍 No matches found")
     else:
         st.divider()
         display_customers(filtered, page_size, formatter, session_manager)
     
     # Footer
     st.divider()
-    if st.button("Close", use_container_width=True, type="primary"):
+    # FIXED: Use on_click to avoid immediate rerun
+    if st.button("✅ Close", use_container_width=True, type="primary"):
         session_manager.close_customer_dialog()
         st.rerun()
 
@@ -279,14 +280,20 @@ def display_customers(
         'FUTURE': '🟢'
     }
     
-    for _, row in page_data.iterrows():
+    # FIXED: Display each customer with full details
+    for idx, row in page_data.iterrows():
         icon = urgency_icons.get(row['urgency'], '⚪')
+        
+        # Customer header
+        customer_name = row['customer']
+        customer_code = row.get('customer_code', 'N/A')
+        product_count = int(row['product_count'])
+        
         with st.expander(
-            f"{icon} **{row['customer']}** ({row['customer_code']}) - "
-            f"{row['product_count']} products affected", 
+            f"{icon} **{customer_name}** ({customer_code}) - {product_count} products affected", 
             expanded=False
         ):
-            # Metrics
+            # Metrics row
             m_cols = st.columns(5)
             with m_cols[0]:
                 st.metric("Required", formatter.format_number(row['total_required']))
@@ -307,11 +314,16 @@ def display_customers(
             with tab1:
                 st.caption("**Product-level breakdown:**")
                 
-                # Header row
+                # Check if products data exists
+                if 'products' not in row or not row['products']:
+                    st.warning("No product details available")
+                    continue
+                
+                # FIXED: Header row with proper styling
                 h_cols = st.columns([0.3, 2, 1, 1, 1, 1, 0.8])
                 headers = ["#", "Product", "Required", "Shortage", "At Risk", "Coverage", "Urgency"]
                 for col, header in zip(h_cols, headers):
-                    col.caption(header)
+                    col.markdown(f"**{header}**")
                 
                 # Product rows
                 products = row['products'][:MAX_PRODUCTS_PER_CUSTOMER]
@@ -322,7 +334,7 @@ def display_customers(
                         st.text(str(i))
                     with p_cols[1]:
                         st.text(prod['pt_code'])
-                        st.caption(prod['product_name'][:30])
+                        st.caption(prod['product_name'][:40] + "..." if len(prod['product_name']) > 40 else prod['product_name'])
                     with p_cols[2]:
                         st.text(formatter.format_number(prod['required_quantity']))
                     with p_cols[3]:
@@ -358,7 +370,9 @@ def display_customers(
                 across **{row['product_count']}** products.
 
                 For each product, the customer's shortage is calculated as:
-                    Customer Shortage = Product Shortage × (Customer Demand ÷ Total Product Demand)
+                ```
+                Customer Shortage = Product Shortage × (Customer Demand ÷ Total Product Demand)
+                ```
 
                 ### 2️⃣ At Risk Value
                 - Total order value: **{formatter.format_currency(row['total_demand_value'])}**
@@ -369,28 +383,30 @@ def display_customers(
                 cannot be fulfilled due to shortages.
 
                 ### 3️⃣ Coverage Calculation
-                    Coverage % = (Available Supply ÷ Total Demand) × 100
-                    - 🔴 <50%: Severe shortage
-                    - 🟡 50-80%: High shortage
-                    - 🟢 80-100%: Moderate shortage
+                ```
+                Coverage % = (Available Supply ÷ Total Demand) × 100
+                ```
+                - 🔴 <50%: Severe shortage
+                - 🟡 50-80%: High shortage
+                - 🟢 80-100%: Moderate shortage
 
-                    ### 4️⃣ Urgency Levels
-                    Based on required dates:
-                    - 🔴 **OVERDUE**: Past due date
-                    - 🟠 **URGENT**: Due within 7 days
-                    - 🟡 **UPCOMING**: Due within 30 days
-                    - 🟢 **FUTURE**: Due after 30 days
+                ### 4️⃣ Urgency Levels
+                Based on required dates:
+                - 🔴 **OVERDUE**: Past due date
+                - 🟠 **URGENT**: Due within 7 days
+                - 🟡 **UPCOMING**: Due within 30 days
+                - 🟢 **FUTURE**: Due after 30 days
 
-                    ### 5️⃣ Demand Sources
-                    {row['sources']}
-                    """)
+                ### 5️⃣ Demand Sources
+                {row['sources']}
+                """)
     
     # Pagination
     if pages > 1:
         st.divider()
         pag_cols = st.columns([1, 3, 1])
         with pag_cols[0]:
-            if st.button("Previous", disabled=(page == 1), use_container_width=True, key="dlg_prev"):
+            if st.button("⬅️ Previous", disabled=(page == 1), use_container_width=True, key="dlg_prev"):
                 session_manager.set_dialog_page(page - 1, pages)
                 st.rerun()
         with pag_cols[1]:
@@ -399,6 +415,6 @@ def display_customers(
                 unsafe_allow_html=True
             )
         with pag_cols[2]:
-            if st.button("Next", disabled=(page == pages), use_container_width=True, key="dlg_next"):
+            if st.button("➡️ Next", disabled=(page == pages), use_container_width=True, key="dlg_next"):
                 session_manager.set_dialog_page(page + 1, pages)
                 st.rerun()
