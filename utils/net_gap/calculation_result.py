@@ -1,7 +1,8 @@
 # utils/net_gap/calculation_result.py
 
 """
-GAP Calculation Result Container
+GAP Calculation Result Container - Cleaned Version
+Removed unused to_excel_metadata method
 """
 
 import pandas as pd
@@ -86,13 +87,3 @@ class GAPCalculationResult:
             counts[category.lower()] = len(self.gap_df[mask])
         
         return counts
-    
-    def to_excel_metadata(self) -> Dict[str, Any]:
-        """Get metadata for Excel export"""
-        return {
-            'Generated': self.timestamp.strftime('%Y-%m-%d %H:%M:%S'),
-            'Total Items': len(self.gap_df),
-            'Filters': self.filters_used,
-            'Metrics': self.metrics,
-            'Categories': self.get_category_summary()
-        }

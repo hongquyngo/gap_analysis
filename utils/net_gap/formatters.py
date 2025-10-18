@@ -1,7 +1,8 @@
 # utils/net_gap/formatters.py
 
 """
-Formatting utilities for GAP Analysis
+Formatting utilities for GAP Analysis - Cleaned Version
+Removed unused format_status and format_for_excel methods
 """
 
 import pandas as pd
@@ -142,54 +143,3 @@ class GAPFormatter:
                 
         except (ValueError, TypeError):
             return str(value)
-    
-    @staticmethod
-    def format_status(status: str) -> str:
-        """Format GAP status for display"""
-        
-        from .constants import GAP_CATEGORIES, STATUS_ICONS
-        
-        # Find which category this status belongs to
-        for category, config in GAP_CATEGORIES.items():
-            if status in config['statuses']:
-                return f"{config['icon']} {config['label']}"
-        
-        return status
-    
-    @staticmethod
-    def format_for_excel(value: Any, field_type: str) -> Any:
-        """
-        Format value for Excel export
-        Returns None for extreme values to show as blank
-        """
-        
-        if pd.isna(value) or value is None:
-            # Supply fields should be 0
-            if field_type == 'supply' or field_type in ZERO_DEFAULT_FIELDS:
-                return 0
-            return None
-        
-        try:
-            if field_type == 'coverage':
-                # Cap extreme coverage values
-                if value >= 999:
-                    return None
-                return round(value, 2)
-                
-            elif field_type == 'percentage':
-                return round(value, 1)
-                
-            elif field_type == 'currency':
-                return round(value, 2)
-                
-            elif field_type == 'quantity':
-                return int(value) if value == int(value) else round(value, 2)
-                
-            else:
-                # Default handling
-                if isinstance(value, float):
-                    return round(value, 2)
-                return value
-                
-        except (ValueError, TypeError):
-            return value

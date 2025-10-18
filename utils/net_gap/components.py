@@ -1,24 +1,24 @@
 # utils/net_gap/components.py
 
 """
-UI Components for GAP Analysis - COMPLETE VERSION
-Preserves 100% of original detailed functionality
+UI Components for GAP Analysis - Cleaned Version
+Removed unused preset functions and simplified display logic
 """
 
 import streamlit as st
 import pandas as pd
 import numpy as np
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List
 import logging
 
-from .constants import TABLE_PRESETS, STATUS_ICONS, FIELD_TOOLTIPS, UI_CONFIG
+from .constants import STATUS_ICONS, FIELD_TOOLTIPS, UI_CONFIG
 from .formatters import GAPFormatter
 
 logger = logging.getLogger(__name__)
 
 
 def render_kpi_cards(metrics: Dict[str, Any], include_safety: bool = False):
-    """Render KPI metric cards - COMPLETE"""
+    """Render KPI metric cards"""
     
     # Row 1: Core metrics
     col1, col2, col3, col4 = st.columns(4)
@@ -134,13 +134,11 @@ def render_kpi_cards(metrics: Dict[str, Any], include_safety: bool = False):
 def prepare_detailed_display(
     df: pd.DataFrame,
     formatter: GAPFormatter,
-    preset: str = 'standard',
-    include_safety: bool = False,
-    show_all_columns: bool = False
+    include_safety: bool = False
 ) -> pd.DataFrame:
     """
-    Prepare COMPLETE display dataframe with ALL formatting
-    Preserves 100% of original detailed columns
+    Prepare display dataframe with ALL formatting
+    Simplified - always returns all columns formatted
     """
     
     display_df = df.copy()
@@ -150,7 +148,7 @@ def prepare_detailed_display(
         'CRITICAL_BREACH': '🚨 Critical Breach',
         'BELOW_SAFETY': '⚠️ Below Safety',
         'AT_REORDER': '📦 At Reorder',
-        'HAS_EXPIRED': '❌ Has Expired',
+        'HAS_EXPIRED': '⌛ Has Expired',
         'EXPIRY_RISK': '⏰ Expiry Risk',
         'NO_DEMAND': '⚪ No Demand',
         'SEVERE_SHORTAGE': '🔴 Severe Shortage',
@@ -167,7 +165,7 @@ def prepare_detailed_display(
     if 'gap_status' in display_df.columns:
         display_df['Status'] = display_df['gap_status'].map(status_display).fillna('❓ Unknown')
     
-    # Format Supply columns - COMPLETE
+    # Format Supply columns
     if 'total_supply' in display_df.columns:
         display_df['Supply'] = display_df['total_supply'].apply(
             lambda x: formatter.format_number(x, field_name='supply')
@@ -183,7 +181,7 @@ def prepare_detailed_display(
                 lambda x: formatter.format_number(x, field_name=col)
             )
     
-    # Format Demand columns - COMPLETE
+    # Format Demand columns
     if 'total_demand' in display_df.columns:
         display_df['Demand'] = display_df['total_demand'].apply(formatter.format_number)
     
@@ -209,7 +207,7 @@ def prepare_detailed_display(
             lambda x: formatter.format_percentage(x, show_sign=True)
         )
     
-    # Safety Stock columns - COMPLETE
+    # Safety Stock columns
     if include_safety:
         if 'safety_stock_qty' in display_df.columns:
             display_df['Safety Stock'] = display_df['safety_stock_qty'].apply(
@@ -241,7 +239,7 @@ def prepare_detailed_display(
                 lambda x: '⚠️ Yes' if x else '✅ No'
             )
     
-    # Financial columns - COMPLETE
+    # Financial columns
     if 'avg_unit_cost_usd' in display_df.columns:
         display_df['Unit Cost'] = display_df['avg_unit_cost_usd'].apply(
             lambda x: formatter.format_currency(x, decimals=2)
@@ -309,71 +307,7 @@ def prepare_detailed_display(
             lambda x: formatter.format_number(x) if x > 0 else "-"
         )
     
-    # Select columns based on preset or show all
-    if show_all_columns:
-        # Return ALL formatted columns
-        return display_df
-    else:
-        # Select columns based on preset
-        columns = get_display_columns(preset, display_df.columns, include_safety)
-        return display_df[columns] if columns else display_df
-
-
-def get_display_columns(preset: str, available_columns: list, include_safety: bool) -> list:
-    """
-    Get display columns based on preset
-    Returns COMPLETE column list preserving all details
-    """
-    
-    # Base columns (always shown)
-    base_cols = ['pt_code', 'product_name', 'brand']
-    
-    # Supply/Demand columns
-    supply_demand_cols = ['Supply', 'Demand', 'Net GAP']
-    
-    # Detailed supply columns
-    supply_detail_cols = ['Inventory', 'Can Pending', 'Warehouse Transfer', 'Purchase Order']
-    
-    # Detailed demand columns  
-    demand_detail_cols = ['Oc Pending', 'Forecast']
-    
-    # Analysis columns
-    analysis_cols = ['Coverage', 'GAP %', 'Status', 'Priority', 'Action']
-    
-    # Safety columns
-    safety_cols = ['Safety Stock', 'Available', 'True GAP', 'Safety Cov', 'Days Supply', 'Reorder']
-    
-    # Financial columns
-    financial_cols = ['Unit Cost', 'Sell Price', 'At Risk Value', 'GAP Value', 
-                     'Supply Value', 'Demand Value']
-    
-    # Customer columns
-    customer_cols = ['Customers', 'Overdue', 'Urgent']
-    
-    # Expiry columns
-    expiry_cols = ['Expired Qty', 'Near Expiry']
-    
-    # Build column list based on preset
-    if preset == 'standard':
-        columns = base_cols + supply_demand_cols + analysis_cols[:3]
-    elif preset == 'safety' and include_safety:
-        columns = base_cols + safety_cols + analysis_cols[:2]
-    elif preset == 'financial':
-        columns = base_cols + supply_demand_cols + financial_cols
-    elif preset == 'detailed':
-        columns = base_cols + supply_demand_cols + supply_detail_cols + demand_detail_cols + \
-                 analysis_cols + financial_cols[:4]
-        if include_safety:
-            columns.extend(safety_cols[:3])
-    else:  # 'all' or fallback
-        columns = base_cols + supply_demand_cols + supply_detail_cols + demand_detail_cols + \
-                 analysis_cols + financial_cols + customer_cols
-        if include_safety:
-            columns.extend(safety_cols)
-        columns.extend(expiry_cols)
-    
-    # Filter to available columns only
-    return [col for col in columns if col in available_columns]
+    return display_df
 
 
 def render_data_table(
@@ -383,10 +317,7 @@ def render_data_table(
     formatter: Optional[GAPFormatter] = None,
     include_safety: bool = False
 ):
-    """
-    Simplified data table - load ALL columns, show default subset
-    User controls visibility via Streamlit's built-in column selector
-    """
+    """Simplified data table - always loads ALL columns"""
     
     if formatter is None:
         formatter = GAPFormatter()
@@ -399,12 +330,10 @@ def render_data_table(
     display_df = prepare_detailed_display(
         df, 
         formatter, 
-        preset='all',  # Always load ALL columns
-        include_safety=include_safety,
-        show_all_columns=True
+        include_safety=include_safety
     )
     
-    # Default visible columns (like current "Detailed" preset)
+    # Default visible columns
     default_visible = [
         'pt_code', 'product_name', 'brand',
         'Supply', 'Inventory', 'Can Pending', 'Warehouse Transfer', 'Purchase Order',
@@ -437,12 +366,12 @@ def render_data_table(
     st.dataframe(
         display_df.iloc[start_idx:end_idx],
         use_container_width=True,
-        hide_index=True,
+        hide_index=False,
         column_config={
             col: st.column_config.Column(col, help=FIELD_TOOLTIPS.get(col))
             for col in display_df.columns if col in FIELD_TOOLTIPS
         },
-        column_order=column_order,  # Default visible columns first
+        column_order=column_order,
         height=min(600, (end_idx - start_idx) * 35 + 100)
     )
     
@@ -454,86 +383,8 @@ def render_data_table(
     }
 
 
-def render_table_presets(on_preset_change=None, include_safety: bool = False):
-    """Render table preset buttons"""
-    
-    # Define available presets
-    presets = {
-        'standard': '📊 Standard',
-        'safety': '🔒 Safety',
-        'financial': '💰 Financial', 
-        'detailed': '📋 Detailed',
-        'all': '🔍 All Columns'
-    }
-    
-    # Remove safety preset if not applicable
-    if not include_safety:
-        presets.pop('safety', None)
-    
-    cols = st.columns(len(presets))
-    
-    for idx, (key, label) in enumerate(presets.items()):
-        with cols[idx]:
-            if st.button(label, use_container_width=True, key=f"preset_{key}"):
-                if on_preset_change:
-                    on_preset_change(key)
-                return key
-    
-    return None
-
-
-def render_table_configuration(current_config: Dict[str, bool]) -> Dict[str, bool]:
-    """
-    Render advanced table configuration options
-    Preserves original column selection functionality
-    """
-    
-    with st.expander("⚙️ Advanced Table Configuration", expanded=False):
-        st.markdown("**Select column groups to display:**")
-        
-        new_config = {}
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            st.markdown("**Basic Information**")
-            new_config['basic'] = st.checkbox("Product Info", value=current_config.get('basic', True))
-            new_config['supply'] = st.checkbox("Supply & Demand", value=current_config.get('supply', True))
-            new_config['supply_details'] = st.checkbox("Supply Sources", value=current_config.get('supply_details', False))
-        
-        with col2:
-            st.markdown("**Analysis**")
-            new_config['analysis'] = st.checkbox("GAP Analysis", value=current_config.get('analysis', True))
-            new_config['safety'] = st.checkbox("Safety Stock", value=current_config.get('safety', False))
-            new_config['demand_details'] = st.checkbox("Demand Sources", value=current_config.get('demand_details', False))
-        
-        with col3:
-            st.markdown("**Additional**")
-            new_config['financial'] = st.checkbox("Financial", value=current_config.get('financial', False))
-            new_config['customer'] = st.checkbox("Customer Info", value=current_config.get('customer', False))
-            new_config['expiry'] = st.checkbox("Expiry Info", value=current_config.get('expiry', False))
-        
-        # Quick selection buttons
-        st.markdown("**Quick Selection:**")
-        button_cols = st.columns(4)
-        
-        if button_cols[0].button("Essential", use_container_width=True):
-            return {'basic': True, 'supply': True, 'analysis': True}
-        
-        if button_cols[1].button("Complete", use_container_width=True):
-            return {k: True for k in new_config.keys()}
-        
-        if button_cols[2].button("Financial Focus", use_container_width=True):
-            return {'basic': True, 'supply': True, 'financial': True, 'analysis': True}
-        
-        if button_cols[3].button("Reset", use_container_width=True):
-            return {'basic': True, 'supply': True, 'analysis': True}
-    
-    return new_config
-
-
 def render_pagination(current_page: int, total_pages: int, key_prefix: str = "page"):
-    """Render pagination controls - COMPLETE"""
+    """Render pagination controls"""
     
     if total_pages <= 1:
         return current_page
@@ -543,7 +394,7 @@ def render_pagination(current_page: int, total_pages: int, key_prefix: str = "pa
     new_page = current_page
     
     with col1:
-        if st.button("⏮", disabled=(current_page == 1), key=f"{key_prefix}_first"):
+        if st.button("⮜", disabled=(current_page == 1), key=f"{key_prefix}_first"):
             new_page = 1
     
     with col2:
@@ -563,7 +414,7 @@ def render_pagination(current_page: int, total_pages: int, key_prefix: str = "pa
             new_page = current_page + 1
     
     with col5:
-        if st.button("⏭", disabled=(current_page == total_pages), key=f"{key_prefix}_last"):
+        if st.button("⮞", disabled=(current_page == total_pages), key=f"{key_prefix}_last"):
             new_page = total_pages
     
     return new_page
@@ -625,7 +476,7 @@ def render_quick_filter():
 
 
 def apply_quick_filter(df: pd.DataFrame, filter_type: str) -> pd.DataFrame:
-    """Apply quick filter to dataframe - ENHANCED"""
+    """Apply quick filter to dataframe"""
     from .constants import GAP_CATEGORIES
     
     if filter_type == 'all' or df.empty:

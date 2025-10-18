@@ -1,13 +1,13 @@
 # utils/net_gap/charts.py
 
 """
-Simplified visualization components for GAP Analysis
+Visualization components for GAP Analysis - Cleaned Version
+Removed unused create_coverage_histogram function
 """
 
 import pandas as pd
 import plotly.graph_objects as go
-import plotly.express as px
-from typing import Dict, Any, Optional
+from typing import Optional
 import logging
 
 from .constants import GAP_CATEGORIES, UI_CONFIG
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class GAPCharts:
-    """Simplified charts - only essential visualizations"""
+    """Essential visualizations only"""
     
     def __init__(self, formatter=None):
         self.formatter = formatter
@@ -136,51 +136,6 @@ class GAPCharts:
             yaxis=dict(autorange="reversed"),
             height=max(300, min(700, len(df) * 40)),
             margin=dict(l=200, r=100, t=50, b=50)
-        )
-        
-        return fig
-    
-    def create_coverage_histogram(self, gap_df: pd.DataFrame) -> go.Figure:
-        """Create coverage distribution histogram"""
-        
-        if gap_df.empty or 'coverage_ratio' not in gap_df.columns:
-            return self._empty_chart("No coverage data available")
-        
-        # Filter valid coverage values
-        coverage = gap_df['coverage_ratio'].dropna()
-        coverage = coverage[coverage < 10]  # Cap at 1000% for visualization
-        
-        if coverage.empty:
-            return self._empty_chart("No valid coverage data")
-        
-        # Convert to percentage
-        coverage_pct = coverage * 100
-        
-        # Create histogram
-        fig = go.Figure(data=[
-            go.Histogram(
-                x=coverage_pct,
-                nbinsx=20,
-                marker=dict(
-                    color='rgba(59, 130, 246, 0.6)',
-                    line=dict(color='rgba(59, 130, 246, 1)', width=1)
-                ),
-                hovertemplate='Coverage: %{x:.0f}%<br>Count: %{y}<extra></extra>'
-            )
-        ])
-        
-        # Add reference lines
-        fig.add_vline(x=95, line_dash="dash", line_color="green", 
-                     annotation_text="Target (95%)")
-        fig.add_vline(x=100, line_dash="solid", line_color="blue", 
-                     annotation_text="Balanced")
-        
-        fig.update_layout(
-            title="Coverage Distribution",
-            xaxis_title="Coverage %",
-            yaxis_title="Number of Items",
-            height=UI_CONFIG['chart_height'],
-            bargap=0.1
         )
         
         return fig

@@ -1,12 +1,9 @@
 # utils/net_gap/data_loader.py
 
 """
-Data Loader for GAP Analysis - Version 3.3 ENHANCED
-- Added entity exclusion support
-- Enhanced exclusion support for products and brands
-- Added exclude expired inventory option
-- Enhanced entity display with company_code
-- Enhanced product display with package_size
+Data Loader for GAP Analysis - Cleaned Version
+- Removed unused get_entities() and get_date_range() functions
+- Consolidated cache TTL constants
 """
 
 import pandas as pd
@@ -29,10 +26,12 @@ from utils.db import get_db_engine
 
 logger = logging.getLogger(__name__)
 
-# Cache configuration
-CACHE_TTL_DATA = 300
-CACHE_TTL_REFERENCE = 600
-CACHE_TTL_SAFETY = 900
+# Cache configuration - single source of truth
+CACHE_TTL = {
+    'data': 300,       # 5 minutes
+    'reference': 600,  # 10 minutes
+    'safety': 900      # 15 minutes
+}
 
 # Validation constants
 MAX_ENTITY_NAME_LENGTH = 200
@@ -56,7 +55,7 @@ class DatabaseConnectionError(DataLoadError):
 
 
 class GAPDataLoader:
-    """Handles all data loading operations for GAP analysis with full exclusion support"""
+    """Handles all data loading operations for GAP analysis"""
     
     def __init__(self):
         self._engine = None
@@ -161,7 +160,7 @@ class GAPDataLoader:
                 raise ValidationError(f"{name} item too long: {len(item)} chars")
     
     # Entity Mapping
-    @st.cache_data(ttl=CACHE_TTL_REFERENCE)
+    @st.cache_data(ttl=CACHE_TTL['reference'])
     def get_entity_id(_self, entity_name: str) -> Optional[int]:
         """Map entity name to entity ID"""
         _self._validate_entity_name(entity_name)
@@ -195,7 +194,7 @@ class GAPDataLoader:
             raise DataLoadError(f"Failed to get entity ID: {str(e)}")
     
     # Safety Stock
-    @st.cache_data(ttl=CACHE_TTL_REFERENCE)
+    @st.cache_data(ttl=CACHE_TTL['reference'])
     def check_safety_stock_availability(_self) -> bool:
         """Check if safety stock data is available"""
         if _self._safety_stock_available is not None:
@@ -224,53 +223,7 @@ class GAPDataLoader:
             _self._safety_stock_available = False
             return False
     
-    @st.cache_data(ttl=CACHE_TTL_REFERENCE)
-    def get_date_range(_self) -> Dict[str, date]:
-        """Get min/max dates from data"""
-        try:
-            query = """
-                SELECT 
-                    MIN(date_col) as min_date,
-                    MAX(date_col) as max_date
-                FROM (
-                    SELECT availability_date as date_col 
-                    FROM unified_supply_view 
-                    WHERE availability_date IS NOT NULL
-                    UNION ALL
-                    SELECT required_date as date_col 
-                    FROM unified_demand_view 
-                    WHERE required_date IS NOT NULL
-                ) AS all_dates
-            """
-            
-            with _self.get_connection() as conn:
-                result = conn.execute(text(query)).fetchone()
-                
-                if result and result[0] and result[1]:
-                    min_date = pd.to_datetime(result[0]).date()
-                    max_date = pd.to_datetime(result[1]).date()
-                    
-                    logger.info(f"Data date range: {min_date} to {max_date}")
-                    
-                    return {
-                        'min_date': min_date,
-                        'max_date': max_date
-                    }
-            
-            logger.warning("Could not get date range from database")
-            return {
-                'min_date': date.today() - timedelta(days=90),
-                'max_date': date.today() + timedelta(days=90)
-            }
-            
-        except SQLAlchemyError as e:
-            logger.error(f"Database error getting date range: {e}", exc_info=True)
-            return {
-                'min_date': date.today() - timedelta(days=90),
-                'max_date': date.today() + timedelta(days=90)
-            }
-    
-    @st.cache_data(ttl=CACHE_TTL_SAFETY)
+    @st.cache_data(ttl=CACHE_TTL['safety'])
     def load_safety_stock_data(
         _self,
         entity_name: Optional[str] = None,
@@ -370,7 +323,7 @@ class GAPDataLoader:
         
         return df
     
-    @st.cache_data(ttl=CACHE_TTL_DATA)
+    @st.cache_data(ttl=CACHE_TTL['data'])
     def load_supply_data(
         _self,
         entity_name: Optional[str] = None,
@@ -381,18 +334,7 @@ class GAPDataLoader:
         exclude_brands: bool = False,
         exclude_expired: bool = True
     ) -> pd.DataFrame:
-        """
-        Load supply data with full exclusion support
-        
-        Args:
-            entity_name: Entity name to include/exclude
-            exclude_entity: If True, exclude specified entity
-            product_ids: Product IDs to include/exclude
-            brands: Brands to include/exclude
-            exclude_products: If True, exclude specified products
-            exclude_brands: If True, exclude specified brands
-            exclude_expired: If True, exclude expired inventory
-        """
+        """Load supply data with full exclusion support"""
         try:
             _self._validate_entity_name(entity_name)
             if product_ids:
@@ -422,7 +364,7 @@ class GAPDataLoader:
             logger.error(f"Unexpected error loading supply: {e}", exc_info=True)
             raise DataLoadError(f"Failed to load supply data: {str(e)}")
     
-    @st.cache_data(ttl=CACHE_TTL_DATA)
+    @st.cache_data(ttl=CACHE_TTL['data'])
     def load_demand_data(
         _self,
         entity_name: Optional[str] = None,
@@ -432,17 +374,7 @@ class GAPDataLoader:
         exclude_products: bool = False,
         exclude_brands: bool = False
     ) -> pd.DataFrame:
-        """
-        Load demand data with full exclusion support
-        
-        Args:
-            entity_name: Entity name to include/exclude
-            exclude_entity: If True, exclude specified entity
-            product_ids: Product IDs to include/exclude
-            brands: Brands to include/exclude
-            exclude_products: If True, exclude specified products
-            exclude_brands: If True, exclude specified brands
-        """
+        """Load demand data with full exclusion support"""
         try:
             _self._validate_entity_name(entity_name)
             if product_ids:
@@ -677,35 +609,8 @@ class GAPDataLoader:
         
         return df
     
-    # Reference Data - Enhanced
-    @st.cache_data(ttl=CACHE_TTL_REFERENCE)
-    def get_entities(_self) -> List[str]:
-        """Get list of unique entity names"""
-        try:
-            query = """
-                SELECT DISTINCT entity_name 
-                FROM (
-                    SELECT DISTINCT entity_name FROM unified_supply_view 
-                    WHERE entity_name IS NOT NULL
-                    UNION
-                    SELECT DISTINCT entity_name FROM unified_demand_view 
-                    WHERE entity_name IS NOT NULL
-                ) AS entities
-                ORDER BY entity_name
-            """
-            
-            with _self.get_connection() as conn:
-                result = conn.execute(text(query))
-                entities = [row[0] for row in result if row[0]]
-            
-            logger.info(f"Loaded {len(entities)} entities")
-            return entities
-            
-        except SQLAlchemyError as e:
-            logger.error(f"Database error getting entities: {e}", exc_info=True)
-            raise DataLoadError(f"Failed to get entities: {str(e)}")
-    
-    @st.cache_data(ttl=CACHE_TTL_REFERENCE)
+    # Reference Data - Enhanced with formatted display
+    @st.cache_data(ttl=CACHE_TTL['reference'])
     def get_entities_formatted(_self) -> pd.DataFrame:
         """Get entities with company_code for formatted display"""
         try:
@@ -735,7 +640,7 @@ class GAPDataLoader:
             logger.error(f"Database error getting formatted entities: {e}", exc_info=True)
             raise DataLoadError(f"Failed to get formatted entities: {str(e)}")
     
-    @st.cache_data(ttl=CACHE_TTL_REFERENCE)
+    @st.cache_data(ttl=CACHE_TTL['reference'])
     def get_products(_self, entity_name: Optional[str] = None) -> pd.DataFrame:
         """Get list of products with package_size"""
         try:
@@ -784,7 +689,7 @@ class GAPDataLoader:
             logger.error(f"Database error getting products: {e}", exc_info=True)
             raise DataLoadError(f"Failed to get products: {str(e)}")
     
-    @st.cache_data(ttl=CACHE_TTL_REFERENCE)
+    @st.cache_data(ttl=CACHE_TTL['reference'])
     def get_brands(_self, entity_name: Optional[str] = None) -> List[str]:
         """Get list of unique brands"""
         try:

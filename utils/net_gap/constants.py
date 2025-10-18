@@ -1,7 +1,8 @@
 # utils/net_gap/constants.py
 
 """
-Consolidated constants for GAP Analysis System
+Constants for GAP Analysis System - Cleaned Version
+Removed unused presets and actions
 """
 
 # GAP Status Categories - Simplified from 11 to 5
@@ -107,45 +108,6 @@ DEMAND_SOURCES = {
     }
 }
 
-# Table Column Presets - COMPLETE with all original columns
-TABLE_PRESETS = {
-    'standard': {
-        'columns': ['pt_code', 'product_name', 'brand', 'Supply', 'Demand', 
-                   'Net GAP', 'Coverage', 'GAP %', 'Status'],
-        'label': '📊 Standard'
-    },
-    'safety': {
-        'columns': ['pt_code', 'product_name', 'Safety Stock', 'Available', 
-                   'True GAP', 'Safety Cov', 'Days Supply', 'Reorder'],
-        'label': '🔒 Safety'
-    },
-    'financial': {
-        'columns': ['pt_code', 'product_name', 'Unit Cost', 'Sell Price',
-                   'At Risk Value', 'GAP Value', 'Supply Value', 'Demand Value'],
-        'label': '💰 Financial'
-    },
-    'detailed': {
-        'columns': ['pt_code', 'product_name', 'brand', 
-                   'Supply', 'Inventory', 'Can Pending', 'Warehouse Transfer', 'Purchase Order',
-                   'Demand', 'Oc Pending', 'Forecast',
-                   'Net GAP', 'Coverage', 'GAP %', 'Status', 'Priority', 'Action',
-                   'Unit Cost', 'At Risk Value', 'GAP Value'],
-        'label': '📋 Detailed'
-    },
-    'all': {
-        'columns': ['pt_code', 'product_name', 'brand', 'standard_uom',
-                   'Supply', 'Inventory', 'Can Pending', 'Warehouse Transfer', 'Purchase Order',
-                   'Demand', 'Oc Pending', 'Forecast',
-                   'Net GAP', 'Coverage', 'GAP %', 'Status', 'Priority', 'Action',
-                   'Safety Stock', 'Available', 'True GAP', 'Safety Cov', 'Days Supply', 'Reorder',
-                   'Unit Cost', 'Sell Price', 'At Risk Value', 'GAP Value', 
-                   'Supply Value', 'Demand Value',
-                   'Customers', 'Overdue', 'Urgent',
-                   'Expired Qty', 'Near Expiry'],
-        'label': '🔍 All Columns'
-    }
-}
-
 # Field Tooltips
 FIELD_TOOLTIPS = {
     'pt_code': 'Product code identifier',
@@ -169,13 +131,6 @@ EXPORT_CONFIG = {
     'sheets': ['Summary', 'GAP Details', 'Cost Analysis', 'Calculation Guide']
 }
 
-# Cache TTL (seconds)
-CACHE_TTL = {
-    'data': 300,      # 5 minutes
-    'reference': 600, # 10 minutes
-    'safety': 900     # 15 minutes
-}
-
 # UI Configuration
 UI_CONFIG = {
     'items_per_page_options': [10, 25, 50, 100],
@@ -192,14 +147,4 @@ STATUS_ICONS = {
     'INACTIVE': '⭕',
     'WARNING': '⚠️',
     'CRITICAL': '🚨'
-}
-
-# Quick Actions
-QUICK_ACTIONS = {
-    'critical_shortage': 'Expedite all orders immediately',
-    'high_shortage': 'Create PO within 2 days',
-    'moderate_shortage': 'Plan replenishment',
-    'balanced': 'No action needed',
-    'surplus': 'Reduce/cancel orders',
-    'expired': 'Dispose immediately'
 }

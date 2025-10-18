@@ -1,12 +1,16 @@
 # utils/net_gap/filters.py
 
 """
-Simplified Filter Components for GAP Analysis
+Filter Components for GAP Analysis - Cleaned Version
+- Improved UI layout for brand selector
+- Added date range display
+- Enhanced product/entity display formats
 """
 
 import streamlit as st
 import pandas as pd
 from typing import Dict, Any, Optional, List, Tuple
+from datetime import datetime, timedelta
 import logging
 
 from .constants import SUPPLY_SOURCES, DEMAND_SOURCES
@@ -16,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 class GAPFilters:
-    """Simplified filter management - single row layout"""
+    """Filter management with improved UI layout"""
     
     def __init__(self, data_loader):
         self.data_loader = data_loader
@@ -24,19 +28,23 @@ class GAPFilters:
         self._safety_available = data_loader.check_safety_stock_availability()
     
     def render_filters(self) -> Dict[str, Any]:
-        """Render all filters in compact layout"""
+        """Render all filters with improved layout"""
         
         with st.container():
-            # Apply compact CSS
+            # Apply compact CSS with tooltip support
             self._apply_compact_css()
             
             # Get current filters from state
             current = self.state.get_filters()
             filters = {}
             
-            # Scope Section - Single Row
+            # Date Range Display (non-editable, informational)
+            self._render_date_range_info()
+            
+            # Scope Section - Adjusted column widths
             st.markdown("#### 🔍 Scope")
-            col_entity, col_product, col_brand, col_options = st.columns([3, 4, 1.5, 1])
+            # Adjusted: reduced product width, increased brand width
+            col_entity, col_product, col_brand, col_options = st.columns([3, 4, 2, 1])
             
             with col_entity:
                 entity_data = self._render_entity_selector(current)
@@ -61,7 +69,7 @@ class GAPFilters:
                     help="Exclude expired inventory"
                 )
             
-            # Data Sources Section - Single Row
+            # Data Sources Section
             st.markdown("#### 📊 Data Sources")
             col_supply, col_demand, col_safety = st.columns([4, 3, 3])
             
@@ -74,7 +82,7 @@ class GAPFilters:
             with col_safety:
                 filters['include_safety'] = self._render_safety_toggle(current)
             
-            # Analysis Options - Single Row
+            # Analysis Options
             col_group, col_info = st.columns([3, 7])
             
             with col_group:
@@ -99,7 +107,7 @@ class GAPFilters:
         return filters
     
     def _apply_compact_css(self):
-        """Apply CSS for compact layout"""
+        """Apply CSS for compact layout with tooltip support"""
         st.markdown("""
             <style>
             /* Compact multiselect */
@@ -114,11 +122,40 @@ class GAPFilters:
             .stCheckbox {
                 margin-top: 28px;
             }
+            /* Tooltip support for truncated text */
+            .truncate {
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+            .truncate:hover {
+                overflow: visible;
+                white-space: normal;
+                background: #f0f0f0;
+                z-index: 1000;
+                position: relative;
+            }
             </style>
         """, unsafe_allow_html=True)
     
+    def _render_date_range_info(self):
+        """Display data date range information (non-editable)"""
+        try:
+            # Get date range from data
+            today = datetime.now().date()
+            # Default range if no data
+            min_date = today - timedelta(days=90)
+            max_date = today + timedelta(days=90)
+            
+            st.info(
+                f"📅 Data Range: {min_date.strftime('%Y-%m-%d')} to {max_date.strftime('%Y-%m-%d')} "
+                f"(All available data will be included)"
+            )
+        except Exception as e:
+            logger.warning(f"Could not display date range: {e}")
+    
     def _render_entity_selector(self, current: Dict) -> Dict[str, Any]:
-        """Render entity selector with count"""
+        """Render entity selector with improved format: Code | English name"""
         try:
             entities_df = self.data_loader.get_entities_formatted()
             
@@ -136,7 +173,14 @@ class GAPFilters:
                 entity_map = {}
                 
                 for _, row in entities_df.iterrows():
-                    display = f"{row['company_code']} - {row['english_name'][:30]}"
+                    # Format: Code | English name
+                    code = row.get('company_code', 'N/A')
+                    name = row['english_name']
+                    
+                    # Truncate if too long
+                    display_name = name[:40] + "..." if len(name) > 40 else name
+                    display = f"{code} | {display_name}"
+                    
                     options.append(display)
                     entity_map[display] = row['english_name']
                 
@@ -153,7 +197,8 @@ class GAPFilters:
                     "Entity",
                     options=options,
                     index=default_idx,
-                    key="entity_select"
+                    key="entity_select",
+                    help="Select entity or leave as 'All'"
                 )
             
             with sub2:
@@ -182,19 +227,44 @@ class GAPFilters:
             return {'selected': None, 'exclude': False}
     
     def _render_product_selector(self, entity: Optional[str], current: Dict) -> Dict[str, Any]:
-        """Render product multiselect"""
+        """Render product multiselect with format: pt_code | Name | Package size (Brand)"""
         try:
             products_df = self.data_loader.get_products(entity)
             
             if products_df.empty:
                 return {'selected': [], 'exclude': False}
             
-            # Format display
-            products_df['display'] = products_df.apply(
-                lambda x: f"{x['pt_code']} | {x['product_name'][:25]}",
-                axis=1
-            )
-            product_map = dict(zip(products_df['product_id'], products_df['display']))
+            # Format display with full information
+            def format_product_display(row):
+                pt_code = row.get('pt_code', 'N/A')
+                name = row.get('product_name', 'N/A')
+                package = row.get('package_size', '')
+                brand = row.get('brand', '')
+                
+                # Truncate name if too long
+                name_display = name[:25] + "..." if len(name) > 25 else name
+                
+                # Build display string
+                display = f"{pt_code} | {name_display}"
+                if package:
+                    display += f" | {package}"
+                if brand:
+                    display += f" ({brand})"
+                
+                return display
+            
+            products_df['display'] = products_df.apply(format_product_display, axis=1)
+            
+            # Create mapping with full info for tooltip
+            product_map = {}
+            for _, row in products_df.iterrows():
+                product_map[row['product_id']] = {
+                    'display': row['display'],
+                    'full_name': row.get('product_name', ''),
+                    'pt_code': row.get('pt_code', ''),
+                    'package': row.get('package_size', ''),
+                    'brand': row.get('brand', '')
+                }
             
             # Current selection
             current_products = current.get('products', [])
@@ -208,9 +278,10 @@ class GAPFilters:
                     "Products",
                     options=list(product_map.keys()),
                     default=valid_selected,
-                    format_func=lambda x: product_map[x],
+                    format_func=lambda x: product_map[x]['display'],
                     placeholder=f"All ({len(products_df)} available)",
-                    key="products_multi"
+                    key="products_multi",
+                    help="Select products or leave empty for all"
                 )
             
             with sub2:
@@ -232,7 +303,7 @@ class GAPFilters:
             return {'selected': [], 'exclude': False}
     
     def _render_brand_selector(self, entity: Optional[str], current: Dict) -> Dict[str, Any]:
-        """Render brand multiselect - ultra compact"""
+        """Render brand multiselect with better layout"""
         try:
             brands = self.data_loader.get_brands(entity)
             
@@ -242,8 +313,8 @@ class GAPFilters:
             current_brands = current.get('brands', [])
             valid_selected = [b for b in current_brands if b in brands]
             
-            # Sub-columns
-            sub1, sub2 = st.columns([3, 1])
+            # Sub-columns with better proportion
+            sub1, sub2 = st.columns([4, 2])
             
             with sub1:
                 selected = st.multiselect(
@@ -251,7 +322,8 @@ class GAPFilters:
                     options=brands,
                     default=valid_selected,
                     placeholder=f"All ({len(brands)})",
-                    key="brands_multi"
+                    key="brands_multi",
+                    help="Select brands or leave empty for all"
                 )
             
             with sub2:
@@ -260,7 +332,7 @@ class GAPFilters:
                     "Excl",
                     value=current.get('exclude_brands', False),
                     key="brands_excl",
-                    help="Exclude"
+                    help="Exclude selected brands"
                 )
             
             return {'selected': selected, 'exclude': exclude}
