@@ -378,16 +378,14 @@ def get_display_columns(preset: str, available_columns: list, include_safety: bo
 
 def render_data_table(
     df: pd.DataFrame,
-    preset: str = 'standard',
     items_per_page: int = 25,
     current_page: int = 1,
     formatter: Optional[GAPFormatter] = None,
-    include_safety: bool = False,
-    show_all_details: bool = False
+    include_safety: bool = False
 ):
     """
-    Render data table with COMPLETE details preserved
-    Maintains 100% of original functionality
+    Simplified data table - load ALL columns, show default subset
+    User controls visibility via Streamlit's built-in column selector
     """
     
     if formatter is None:
@@ -397,16 +395,34 @@ def render_data_table(
         st.info("No data matches current filters")
         return None
     
-    # Prepare COMPLETE display dataframe
+    # Prepare ALL columns with complete formatting
     display_df = prepare_detailed_display(
         df, 
         formatter, 
-        preset, 
-        include_safety,
-        show_all_details
+        preset='all',  # Always load ALL columns
+        include_safety=include_safety,
+        show_all_columns=True
     )
     
-    # Pagination calculations
+    # Default visible columns (like current "Detailed" preset)
+    default_visible = [
+        'pt_code', 'product_name', 'brand',
+        'Supply', 'Inventory', 'Can Pending', 'Warehouse Transfer', 'Purchase Order',
+        'Demand', 'Oc Pending', 'Forecast',
+        'Net GAP', 'Coverage', 'GAP %', 'Status', 'Priority', 'Action'
+    ]
+    
+    # Filter to available columns
+    visible_columns = [col for col in default_visible if col in display_df.columns]
+    
+    # Add remaining columns (hidden by default)
+    all_other_columns = [col for col in display_df.columns if col not in visible_columns]
+    column_order = visible_columns + all_other_columns
+    
+    # Reorder dataframe
+    display_df = display_df[column_order]
+    
+    # Pagination
     total_items = len(display_df)
     total_pages = max(1, (total_items + items_per_page - 1) // items_per_page)
     page = min(current_page, total_pages)
@@ -414,39 +430,27 @@ def render_data_table(
     start_idx = (page - 1) * items_per_page
     end_idx = min(start_idx + items_per_page, total_items)
     
-    # Display metadata
-    st.caption(
-        f"Showing {start_idx+1}-{end_idx} of {total_items} items | "
-        f"Columns: {len(display_df.columns)} | "
-        f"Preset: {preset.title()}"
-    )
+    # Display info
+    st.caption(f"Showing {start_idx+1}-{end_idx} of {total_items} items | Columns: {len(display_df.columns)}")
     
-    # Configure column tooltips
-    column_config = {}
-    for col in display_df.columns:
-        tooltip = FIELD_TOOLTIPS.get(col)
-        if tooltip:
-            column_config[col] = st.column_config.Column(
-                col,
-                help=tooltip,
-                width="medium"
-            )
-    
-    # Display table with Streamlit's built-in features
+    # Display table with ALL columns (user can toggle visibility)
     st.dataframe(
         display_df.iloc[start_idx:end_idx],
         use_container_width=True,
         hide_index=True,
-        column_config=column_config,
-        height=min(600, (end_idx - start_idx) * 35 + 100)  # Dynamic height
+        column_config={
+            col: st.column_config.Column(col, help=FIELD_TOOLTIPS.get(col))
+            for col in display_df.columns if col in FIELD_TOOLTIPS
+        },
+        column_order=column_order,  # Default visible columns first
+        height=min(600, (end_idx - start_idx) * 35 + 100)
     )
     
-    # Return pagination info
     return {
         'page': page,
         'total_pages': total_pages,
         'total_items': total_items,
-        'displayed_columns': len(display_df.columns)
+        'columns': len(display_df.columns)
     }
 
 

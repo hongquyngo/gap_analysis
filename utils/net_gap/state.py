@@ -20,7 +20,6 @@ class GAPState:
     KEY_RESULT = 'gap_result'
     KEY_PAGE = 'current_page'
     KEY_DIALOG_PAGE = 'dialog_page'
-    KEY_TABLE_PRESET = 'table_preset'
     
     def __init__(self):
         self._init_defaults()
@@ -35,8 +34,6 @@ class GAPState:
             st.session_state[self.KEY_PAGE] = 1
         if self.KEY_DIALOG_PAGE not in st.session_state:
             st.session_state[self.KEY_DIALOG_PAGE] = 1
-        if self.KEY_TABLE_PRESET not in st.session_state:
-            st.session_state[self.KEY_TABLE_PRESET] = 'standard'
     
     @staticmethod
     def get_default_filters() -> Dict[str, Any]:
@@ -123,20 +120,10 @@ class GAPState:
         page = max(1, min(page, max_page))
         st.session_state[self.KEY_DIALOG_PAGE] = page
     
-    # Table Preset
-    def get_table_preset(self) -> str:
-        """Get current table preset"""
-        return st.session_state.get(self.KEY_TABLE_PRESET, 'standard')
-    
-    def set_table_preset(self, preset: str):
-        """Set table preset"""
-        st.session_state[self.KEY_TABLE_PRESET] = preset
-    
     # Utility
     def clear_all(self):
         """Clear all state"""
-        for key in [self.KEY_FILTERS, self.KEY_RESULT, self.KEY_PAGE, 
-                   self.KEY_DIALOG_PAGE, self.KEY_TABLE_PRESET]:
+        for key in [self.KEY_FILTERS, self.KEY_RESULT, self.KEY_PAGE, self.KEY_DIALOG_PAGE]:
             if key in st.session_state:
                 del st.session_state[key]
         self._init_defaults()

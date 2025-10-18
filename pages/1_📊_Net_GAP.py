@@ -39,8 +39,6 @@ from utils.net_gap.formatters import GAPFormatter
 from utils.net_gap.components import (
     render_kpi_cards, 
     render_data_table, 
-    render_table_presets,
-    render_table_configuration,
     render_status_summary,
     render_quick_filter,
     apply_quick_filter,
@@ -261,23 +259,10 @@ def main():
     if quick_filter != 'all':
         st.info(f"Showing {len(filtered_df)} of {len(result.gap_df)} items ({quick_filter})")
     
-    # Advanced configuration toggle
-    show_advanced = st.checkbox("🔧 Show Advanced Options", value=False, key="show_advanced")
-    
-    # Table controls
-    col1, col2, col3, col4 = st.columns([3, 2, 2, 2])
+    # Simple table controls
+    col1, col2, col3 = st.columns([2, 2, 3])
     
     with col1:
-        # Table preset selector
-        preset = render_table_presets(
-            on_preset_change=lambda p: state.set_table_preset(p),
-            include_safety=filter_values.get('include_safety', False)
-        )
-        if preset:
-            state.set_table_preset(preset)
-            st.rerun()
-    
-    with col2:
         items_per_page = st.selectbox(
             "Items per page",
             UI_CONFIG['items_per_page_options'],
@@ -285,8 +270,8 @@ def main():
             key="items_per_page"
         )
     
-    with col3:
-        # Search with support for all columns
+    with col2:
+        # Search
         search = st.text_input("Search", placeholder="Filter in all columns...", key="search")
         if search:
             # Search across ALL columns
@@ -295,7 +280,7 @@ def main():
             ).any(axis=1)
             filtered_df = filtered_df[mask]
     
-    with col4:
+    with col3:
         # Export button with full details
         if st.button("📥 Export Excel", type="primary", use_container_width=True):
             try:
@@ -316,32 +301,13 @@ def main():
                 logger.error(f"Export failed: {e}")
                 st.error("Export failed")
     
-    # Show advanced configuration if toggled
-    if show_advanced:
-        config = render_table_configuration(
-            current_config={
-                'basic': True, 
-                'supply': True, 
-                'analysis': True,
-                'supply_details': False,
-                'demand_details': False,
-                'financial': False,
-                'safety': filter_values.get('include_safety', False),
-                'customer': False,
-                'expiry': False
-            }
-        )
-    
-    # Display COMPLETE table with ALL details
-    current_preset = state.get_table_preset()
+    # Display table with ALL columns (simplified)
     page_info = render_data_table(
         filtered_df,
-        preset=current_preset,
         items_per_page=items_per_page,
         current_page=state.get_page(),
         formatter=formatter,
-        include_safety=filter_values.get('include_safety', False),
-        show_all_details=show_advanced
+        include_safety=filter_values.get('include_safety', False)
     )
     
     # Handle pagination
