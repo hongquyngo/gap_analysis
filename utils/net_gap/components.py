@@ -396,7 +396,7 @@ def render_data_table(
     formatter: Optional[GAPFormatter] = None,
     include_safety: bool = False
 ):
-    """Enhanced data table with column visibility control"""
+    """Enhanced data table with column visibility control and highlighting"""
     
     if formatter is None:
         formatter = GAPFormatter()
@@ -424,13 +424,27 @@ def render_data_table(
     if include_safety and 'True GAP' in display_df.columns:
         default_visible.insert(6, 'True GAP')  # Insert after Net GAP
     
-    # Configure column visibility
+    # Configure columns with enhanced styling
     column_config = {}
     
-    # Set help text for important columns
+    # Style Net GAP column with blue highlighting
+    if 'Net GAP' in display_df.columns:
+        column_config['Net GAP'] = st.column_config.TextColumn(
+            'Net GAP',
+            help='Supply minus Demand (considering safety if enabled)',
+            width='medium'
+        )
+    
+    # Style True GAP column with purple highlighting
+    if 'True GAP' in display_df.columns:
+        column_config['True GAP'] = st.column_config.TextColumn(
+            'True GAP',
+            help='Supply minus Demand (ignoring safety stock)',
+            width='medium'
+        )
+    
+    # Configure other important columns with help text
     help_texts = {
-        'Net GAP': 'Supply minus Demand (considering safety if enabled)',
-        'True GAP': 'Supply minus Demand (ignoring safety stock)',
         'Coverage %': 'Supply as percentage of Demand',
         'Available Supply': 'Supply after safety stock reservation',
         'Safety Coverage': 'How many times safety stock is covered',
@@ -444,6 +458,52 @@ def render_data_table(
                 help=help_text
             )
     
+    # Apply pandas styling for highlighting
+    def style_dataframe(df_slice):
+        """Apply color styling to specific columns"""
+        styled_df = df_slice.style
+        
+        # Style Net GAP column (blue background)
+        if 'Net GAP' in df_slice.columns:
+            styled_df = styled_df.apply(
+                lambda x: ['background-color: rgba(59, 130, 246, 0.15)' if col == 'Net GAP' else '' 
+                          for col in x.index],
+                axis=0
+            )
+        
+        # Style True GAP column (purple background)
+        if 'True GAP' in df_slice.columns:
+            styled_df = styled_df.apply(
+                lambda x: ['background-color: rgba(147, 51, 234, 0.15)' if col == 'True GAP' else ''
+                          for col in x.index],
+                axis=0
+            )
+        
+        # Apply conditional formatting for negative values in GAP columns
+        def color_negative(val):
+            """Color negative values red"""
+            if isinstance(val, str) and val.startswith('-'):
+                return 'color: #DC2626; font-weight: bold'
+            elif isinstance(val, str) and val.startswith('+'):
+                return 'color: #059669; font-weight: bold'
+            return ''
+        
+        gap_columns = ['Net GAP', 'True GAP']
+        for col in gap_columns:
+            if col in df_slice.columns:
+                styled_df = styled_df.applymap(color_negative, subset=[col])
+        
+        # Highlight critical status rows
+        if 'Priority' in df_slice.columns:
+            def highlight_critical(row):
+                if row['Priority'] == 'P1-Critical':
+                    return ['background-color: rgba(239, 68, 68, 0.1)'] * len(row)
+                return [''] * len(row)
+            
+            styled_df = styled_df.apply(highlight_critical, axis=1)
+        
+        return styled_df
+    
     # Pagination
     total_items = len(display_df)
     total_pages = max(1, (total_items + items_per_page - 1) // items_per_page)
@@ -452,16 +512,21 @@ def render_data_table(
     start_idx = (page - 1) * items_per_page
     end_idx = min(start_idx + items_per_page, total_items)
     
-    # Display info
-    col1, col2 = st.columns([3, 1])
+    # Display info with legend
+    col1, col2, col3 = st.columns([2, 2, 2])
     with col1:
-        st.caption(f"Showing {start_idx+1}-{end_idx} of {total_items} items | {len(display_df.columns)} columns available")
+        st.caption(f"Showing {start_idx+1}-{end_idx} of {total_items} items")
     with col2:
+        st.caption("🔵 Net GAP (with safety) | 🟣 True GAP (without safety)")
+    with col3:
         st.caption("👁️ Click column headers to show/hide")
     
-    # Display table with configurable columns
+    # Apply styling and display table
+    styled_display = style_dataframe(display_df.iloc[start_idx:end_idx])
+    
+    # Display table with styling
     st.dataframe(
-        display_df.iloc[start_idx:end_idx],
+        styled_display,
         use_container_width=True,
         hide_index=True,
         column_config=column_config,
