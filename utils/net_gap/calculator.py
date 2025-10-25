@@ -1,7 +1,11 @@
-# utils/net_gap/calculator.py - Fixed coverage logic for no-demand items
+# utils/net_gap/calculator.py - Production Ready Version
 
 """
-Simplified GAP Calculator with improved no-demand handling
+GAP Calculator with Correct Logic from Stable Version
+- Fixed coverage logic for no-demand items (using NaN not inf)
+- Fixed safety stock column handling
+- Added expired inventory support
+- Maintained stable version's proven logic
 """
 
 import pandas as pd
@@ -17,13 +21,14 @@ logger = logging.getLogger(__name__)
 
 
 class GAPCalculator:
-    """Simplified GAP calculation engine with logical coverage handling"""
+    """GAP calculation engine with stable version logic + necessary fixes"""
     
     def calculate_net_gap(
         self,
         supply_df: pd.DataFrame,
         demand_df: pd.DataFrame,
         safety_stock_df: Optional[pd.DataFrame] = None,
+        expired_inventory_df: Optional[pd.DataFrame] = None,
         group_by: str = 'product',
         selected_supply_sources: Optional[List[str]] = None,
         selected_demand_sources: Optional[List[str]] = None,
@@ -31,6 +36,16 @@ class GAPCalculator:
     ) -> GAPCalculationResult:
         """
         Calculate net GAP analysis
+        
+        Args:
+            supply_df: Supply data
+            demand_df: Demand data
+            safety_stock_df: Safety stock data (optional)
+            expired_inventory_df: Expired inventory data (optional) - NEW
+            group_by: Grouping level ('product' or 'brand')
+            selected_supply_sources: List of supply sources to include
+            selected_demand_sources: List of demand sources to include
+            include_safety_stock: Include safety stock in calculations
         
         Returns:
             GAPCalculationResult with all data
@@ -63,6 +78,19 @@ class GAPCalculator:
             
             # Calculate GAP metrics with improved logic
             gap_df = self._calculate_metrics(gap_df, include_safety_stock)
+            
+            # Add expired inventory data if provided (NEW)
+            if expired_inventory_df is not None and not expired_inventory_df.empty and group_by == "product":
+                gap_df = gap_df.merge(
+                    expired_inventory_df[["product_id", "expired_quantity", "expired_batches_info"]],
+                    on="product_id",
+                    how="left"
+                )
+                gap_df["expired_quantity"] = gap_df["expired_quantity"].fillna(0)
+                gap_df["expired_batches_info"] = gap_df["expired_batches_info"].fillna("")
+            else:
+                gap_df["expired_quantity"] = 0
+                gap_df["expired_batches_info"] = ""
             
             # Sort by priority
             gap_df = gap_df.sort_values(['priority', 'net_gap'], ascending=[True, True])
@@ -173,6 +201,14 @@ class GAPCalculator:
             demand_df[col_name] = np.where(demand_df['demand_source'] == source, demand_df['required_quantity'], 0)
             agg_dict[col_name] = 'sum'
         
+        
+        # Urgency aggregation
+        if 'urgency_level' in demand_df.columns:
+            # Map to numeric for min operation
+            urgency_map = {'OVERDUE': 1, 'URGENT': 2, 'UPCOMING': 3, 'FUTURE': 4}
+            demand_df['urgency_numeric'] = demand_df['urgency_level'].map(urgency_map).fillna(5)
+            agg_dict['urgency_numeric'] = 'min'
+        
         # Aggregate
         demand_agg = demand_df.groupby(group_cols, as_index=False).agg(agg_dict)
         
@@ -180,48 +216,41 @@ class GAPCalculator:
         demand_agg.rename(columns={
             'required_quantity': 'total_demand',
             'total_value_usd': 'demand_value_usd',
-            'customer': 'customer_count'
+            'customer': 'unique_customers'
         }, inplace=True)
         
-        # Calculate average selling price
-        demand_agg['avg_selling_price_usd'] = np.where(
-            demand_agg['total_demand'] > 0,
-            demand_agg['demand_value_usd'] / demand_agg['total_demand'],
+        # Calculate average selling price using total_value_usd (already in USD)
+        demand_agg["avg_selling_price_usd"] = np.where(
+            demand_agg["total_demand"] > 0,
+            demand_agg["demand_value_usd"] / demand_agg["total_demand"],
             0
         )
         
+        # Map urgency back
+        if 'urgency_numeric' in demand_agg.columns:
+            urgency_reverse = {1: 'OVERDUE', 2: 'URGENT', 3: 'UPCOMING', 4: 'FUTURE', 5: 'N/A'}
+            demand_agg['urgency'] = demand_agg['urgency_numeric'].map(urgency_reverse)
+            demand_agg.drop('urgency_numeric', axis=1, inplace=True)
+        
         return demand_agg
     
-    def _merge_data(
-        self,
-        supply_agg: pd.DataFrame,
-        demand_agg: pd.DataFrame,
-        group_by: str
-    ) -> pd.DataFrame:
+    def _merge_data(self, supply_df: pd.DataFrame, demand_df: pd.DataFrame, group_by: str) -> pd.DataFrame:
         """Merge supply and demand data"""
         
-        # Determine join keys
-        join_keys = ['product_id'] if group_by == 'product' else ['brand']
+        group_cols = self._get_group_columns(group_by)
         
-        # Merge
-        gap_df = pd.merge(
-            supply_agg,
-            demand_agg,
-            on=join_keys,
-            how='outer',
-            suffixes=('_supply', '_demand')
-        )
+        # Perform outer merge to keep all products
+        if not supply_df.empty and not demand_df.empty:
+            gap_df = pd.merge(supply_df, demand_df, on=group_cols, how='outer')
+        elif not supply_df.empty:
+            gap_df = supply_df.copy()
+        elif not demand_df.empty:
+            gap_df = demand_df.copy()
+        else:
+            return pd.DataFrame()
         
-        # Handle descriptive columns for product grouping
-        if group_by == 'product':
-            desc_cols = ['product_name', 'pt_code', 'brand', 'standard_uom']
-            for col in desc_cols:
-                if f'{col}_supply' in gap_df.columns and f'{col}_demand' in gap_df.columns:
-                    gap_df[col] = gap_df[f'{col}_supply'].fillna(gap_df[f'{col}_demand'])
-                    gap_df.drop([f'{col}_supply', f'{col}_demand'], axis=1, inplace=True)
-        
-        # Fill NaN values
-        numeric_cols = gap_df.select_dtypes(include=[np.number]).columns
+        # Fill NaN values for numeric columns
+        numeric_cols = gap_df.select_dtypes(include=[np.number]).columns.tolist()
         gap_df[numeric_cols] = gap_df[numeric_cols].fillna(0)
         
         return gap_df
@@ -232,25 +261,46 @@ class GAPCalculator:
         safety_df: pd.DataFrame,
         group_by: str
     ) -> pd.DataFrame:
-        """Add safety stock data"""
+        """
+        Add safety stock data
+        FIXED: Handle potentially missing columns gracefully
+        """
         
         if safety_df.empty or group_by != 'product':
             gap_df['safety_stock_qty'] = 0
             gap_df['reorder_point'] = 0
             return gap_df
         
-        # Merge safety data
-        safety_cols = ['product_id', 'safety_stock_qty', 'reorder_point', 'avg_daily_demand']
-        safety_data = safety_df[safety_cols].copy()
+        # Check which columns are actually available in safety_df
+        available_cols = ['product_id']
+        desired_cols = ['safety_stock_qty', 'reorder_point', 'avg_daily_demand']
         
+        for col in desired_cols:
+            if col in safety_df.columns:
+                available_cols.append(col)
+            else:
+                logger.warning(f"Column {col} not found in safety_stock_df, using default value 0")
+        
+        # Only select columns that exist
+        safety_data = safety_df[available_cols].copy()
+        
+        # Merge safety data
         gap_df = pd.merge(gap_df, safety_data, on='product_id', how='left')
-        gap_df[['safety_stock_qty', 'reorder_point', 'avg_daily_demand']] = \
-            gap_df[['safety_stock_qty', 'reorder_point', 'avg_daily_demand']].fillna(0)
+        
+        # Fill NaN values for safety columns with 0
+        for col in desired_cols:
+            if col not in gap_df.columns:
+                gap_df[col] = 0
+            else:
+                gap_df[col] = gap_df[col].fillna(0)
         
         return gap_df
     
     def _calculate_metrics(self, gap_df: pd.DataFrame, include_safety: bool) -> pd.DataFrame:
-        """Calculate GAP metrics with improved no-demand handling"""
+        """
+        Calculate GAP metrics with improved no-demand handling
+        IMPORTANT: Uses logic from stable version with NaN for no-demand
+        """
         
         # Available supply (considering safety stock)
         if include_safety and 'safety_stock_qty' in gap_df.columns:
@@ -264,15 +314,17 @@ class GAPCalculator:
         # Net GAP
         gap_df['net_gap'] = gap_df['available_supply'] - gap_df['total_demand']
         
-        # Coverage ratio - IMPROVED LOGIC for no-demand items
-        # When demand is 0, coverage is undefined (not infinite)
+        # True GAP (always ignores safety stock)
+        gap_df['true_gap'] = gap_df['total_supply'] - gap_df['total_demand']
+        
+        # Coverage ratio - IMPORTANT: Use NaN for no-demand (from stable version)
         gap_df['coverage_ratio'] = np.where(
             gap_df['total_demand'] > 0,
             gap_df['available_supply'] / gap_df['total_demand'],
             np.nan  # Use NaN for undefined coverage when no demand
         )
         
-        # GAP percentage - Also handle no-demand case logically
+        # GAP percentage - Also use NaN for no-demand
         gap_df['gap_percentage'] = np.where(
             gap_df['total_demand'] > 0,
             (gap_df['net_gap'] / gap_df['total_demand']) * 100,
@@ -299,6 +351,8 @@ class GAPCalculator:
         # Financial metrics
         if 'avg_unit_cost_usd' in gap_df.columns:
             gap_df['gap_value_usd'] = gap_df['net_gap'] * gap_df['avg_unit_cost_usd']
+        else:
+            gap_df['gap_value_usd'] = 0
         
         if 'avg_selling_price_usd' in gap_df.columns:
             gap_df['at_risk_value_usd'] = np.where(
@@ -306,17 +360,22 @@ class GAPCalculator:
                 abs(gap_df['net_gap']) * gap_df['avg_selling_price_usd'],
                 0
             )
+        else:
+            gap_df['at_risk_value_usd'] = 0
         
         return gap_df
     
     def _classify_status(self, row: pd.Series) -> str:
-        """Classify GAP status - improved for no-demand"""
+        """
+        Classify GAP status - improved for no-demand
+        IMPORTANT: Uses exact logic from stable version
+        """
         
         coverage = row.get('coverage_ratio')
         demand = row.get('total_demand', 0)
         supply = row.get('total_supply', 0)
         
-        # No demand cases
+        # No demand cases (from stable version)
         if demand == 0:
             if supply > 0:
                 return 'NO_DEMAND'  # Have supply but no demand
@@ -335,7 +394,7 @@ class GAPCalculator:
             if inventory < row['safety_stock_qty']:
                 return 'BELOW_SAFETY'
         
-        # Coverage-based classification
+        # Coverage-based classification (from stable version)
         if coverage < THRESHOLDS['coverage']['severe_shortage']:
             return 'SEVERE_SHORTAGE'
         elif coverage < THRESHOLDS['coverage']['high_shortage']:
@@ -354,7 +413,7 @@ class GAPCalculator:
             return 'SEVERE_SURPLUS'
     
     def _get_priority(self, row: pd.Series) -> int:
-        """Get priority level"""
+        """Get priority level (from stable version)"""
         
         status = row.get('gap_status', '')
         
@@ -443,9 +502,8 @@ class GAPCalculator:
         if include_safety and 'below_reorder' in gap_df.columns:
             metrics.update({
                 'below_safety_count': len(gap_df[gap_df['gap_status'] == 'BELOW_SAFETY']),
-                'at_reorder_count': len(gap_df[gap_df['below_reorder'] == True]),
-                'has_expired_count': 0,  # Would need expiry tracking
-                'expiry_risk_count': 0   # Would need expiry tracking
+                'at_reorder_count': len(gap_df[gap_df.get('below_reorder', False) == True]),
+                'has_expired_count': len(gap_df[gap_df.get('expired_quantity', 0) > 0])
             })
         
         return metrics
@@ -471,7 +529,10 @@ class GAPCalculator:
         gap_df: pd.DataFrame,
         demand_df: pd.DataFrame
     ) -> Optional[CustomerImpact]:
-        """Calculate customer impact for shortage items using optimized groupby"""
+        """
+        Calculate customer impact for shortage items using optimized groupby
+        IMPORTANT: Uses exact logic from stable version (with apply, not vectorized)
+        """
         
         try:
             # Get shortage products
@@ -488,12 +549,12 @@ class GAPCalculator:
             if affected_demand.empty:
                 return None
             
-            # Build shortage lookup
+            # Build shortage lookup (from stable version)
             shortage_lookup = shortage_df.set_index('product_id')[
                 ['net_gap', 'total_demand', 'at_risk_value_usd', 'coverage_ratio']
             ].to_dict('index')
             
-            # Calculate shortage allocation for each demand row
+            # Calculate shortage allocation for each demand row (using apply like stable version)
             affected_demand['product_shortage'] = affected_demand.apply(
                 lambda row: abs(shortage_lookup.get(row['product_id'], {}).get('net_gap', 0)) *
                 (row['required_quantity'] / shortage_lookup.get(row['product_id'], {}).get('total_demand', 1))
@@ -510,7 +571,7 @@ class GAPCalculator:
                 axis=1
             )
             
-            # Use groupby for efficient aggregation
+            # Use groupby for efficient aggregation (from stable version)
             customer_agg = affected_demand.groupby('customer').agg({
                 'required_quantity': 'sum',
                 'product_id': 'nunique',

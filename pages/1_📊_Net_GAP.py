@@ -1,8 +1,7 @@
 # pages/1_📊_Net_GAP.py
 
 """
-Net GAP Analysis Page - Enhanced Version 4.1
-Added formula guide and optimized charts
+Net GAP Analysis Page - Enhanced with Expired Inventory Tracking v4.2
 """
 
 import streamlit as st
@@ -44,13 +43,14 @@ from utils.net_gap.components import (
     render_quick_filter,
     apply_quick_filter,
     render_pagination,
-    render_formula_guide  # New component
+    render_formula_guide,
+    render_expired_inventory_summary
 )
 from utils.net_gap.export import export_to_excel
 from utils.net_gap.customer_dialog import show_customer_dialog
 from utils.net_gap.constants import UI_CONFIG
 
-VERSION = "4.1"
+VERSION = "4.2"
 
 
 def initialize_system():
@@ -70,7 +70,7 @@ def calculate_gap(
     calculator: GAPCalculator,
     filter_values: Dict[str, Any]
 ):
-    """Load data and calculate GAP"""
+    """Load data and calculate GAP with expired inventory tracking"""
     
     with st.spinner("📊 Calculating GAP analysis..."):
         # Load supply data
@@ -83,6 +83,19 @@ def calculate_gap(
             exclude_brands=filter_values.get('exclude_brands', False),
             exclude_expired=filter_values.get('exclude_expired', True)
         )
+        
+        # Load expired inventory details if including expired
+        expired_inventory_df = None
+        if not filter_values.get('exclude_expired', True):
+            expired_inventory_df = data_loader.load_expired_inventory_details(
+                entity_name=filter_values.get('entity'),
+                exclude_entity=filter_values.get('exclude_entity', False),
+                product_ids=filter_values.get('products_tuple'),
+                brands=filter_values.get('brands_tuple'),
+                exclude_products=filter_values.get('exclude_products', False),
+                exclude_brands=filter_values.get('exclude_brands', False)
+            )
+            logger.info(f"Loaded expired inventory for {len(expired_inventory_df)} products")
         
         # Load demand data
         demand_df = data_loader.load_demand_data(
@@ -108,11 +121,12 @@ def calculate_gap(
             st.warning("No data available for selected filters")
             return None
         
-        # Calculate GAP
+        # Calculate GAP with expired inventory
         result = calculator.calculate_net_gap(
             supply_df=supply_df,
             demand_df=demand_df,
             safety_stock_df=safety_stock_df,
+            expired_inventory_df=expired_inventory_df,
             group_by=filter_values.get('group_by', 'product'),
             selected_supply_sources=filter_values.get('supply_sources'),
             selected_demand_sources=filter_values.get('demand_sources'),
@@ -137,7 +151,7 @@ def main():
     
     # Page header
     st.title("📊 Net GAP Analysis")
-    st.markdown("Supply-Demand Analysis with Safety Stock Management")
+    st.markdown("Supply-Demand Analysis with Safety Stock & Expired Inventory Tracking")
     
     # Sidebar
     with st.sidebar:
@@ -200,12 +214,19 @@ def main():
         st.info("Configure filters and click 'Calculate GAP' to begin")
         st.stop()
     
+    # Check if expired inventory is included
+    include_expired = not filter_values.get('exclude_expired', True)
+    
     # KPI Cards
     st.subheader("📈 Key Metrics")
     render_kpi_cards(
         result.metrics,
         include_safety=filter_values.get('include_safety', False)
     )
+    
+    # Expired inventory summary
+    if include_expired:
+        render_expired_inventory_summary(result.gap_df)
     
     # Customer impact button (if available)
     if result.customer_impact and result.customer_impact.affected_count > 0:
@@ -310,13 +331,14 @@ def main():
                 logger.error(f"Export failed: {e}")
                 st.error("Export failed")
     
-    # Display enhanced table with column visibility control
+    # Display enhanced table with expired inventory columns
     page_info = render_data_table(
         filtered_df,
         items_per_page=items_per_page,
         current_page=state.get_page(),
         formatter=formatter,
-        include_safety=filter_values.get('include_safety', False)
+        include_safety=filter_values.get('include_safety', False),
+        include_expired=include_expired
     )
     
     # Handle pagination

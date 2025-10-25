@@ -228,7 +228,8 @@ def render_kpi_cards(metrics: Dict[str, Any], include_safety: bool = False):
 def prepare_detailed_display(
     df: pd.DataFrame,
     formatter: GAPFormatter,
-    include_safety: bool = False
+    include_safety: bool = False,
+    include_expired: bool = False
 ) -> pd.DataFrame:
     """
     Prepare display dataframe with selected meaningful columns
@@ -386,6 +387,18 @@ def prepare_detailed_display(
             lambda x: f"{int(x):,}" if pd.notna(x) and x > 0 else "-"
         )
     
+    # Expired inventory columns (if included)
+    if include_expired:
+        if 'expired_quantity' in df.columns:
+            display_df['⚠️ Expired Qty'] = df['expired_quantity'].apply(
+                lambda x: formatter.format_number(x) if x > 0 else '-'
+            )
+        
+        if 'expired_batches_info' in df.columns:
+            display_df['📋 Expired Batches'] = df['expired_batches_info'].apply(
+                lambda x: x if x else '-'
+            )
+    
     return display_df
 
 
@@ -394,7 +407,8 @@ def render_data_table(
     items_per_page: int = 25,
     current_page: int = 1,
     formatter: Optional[GAPFormatter] = None,
-    include_safety: bool = False
+    include_safety: bool = False,
+    include_expired: bool = False
 ):
     """Enhanced data table with column visibility control and highlighting"""
     
@@ -409,7 +423,8 @@ def render_data_table(
     display_df = prepare_detailed_display(
         df, 
         formatter, 
-        include_safety=include_safety
+        include_safety=include_safety,
+        include_expired=include_expired
     )
     
     # Define default visible columns (essential only)
@@ -657,4 +672,31 @@ def apply_quick_filter(df: pd.DataFrame, filter_type: str) -> pd.DataFrame:
         statuses = GAP_CATEGORIES[category]['statuses']
         return df[df['gap_status'].isin(statuses)]
     
-    return df
+
+
+def render_expired_inventory_summary(gap_df: pd.DataFrame):
+    """Render expired inventory summary alert"""
+    
+    if gap_df.empty or 'expired_quantity' not in gap_df.columns:
+        return
+    
+    total_expired = gap_df['expired_quantity'].sum()
+    
+    if total_expired > 0:
+        expired_items = len(gap_df[gap_df['expired_quantity'] > 0])
+        
+        st.warning(
+            f"⚠️ **Expired Inventory Alert**: {expired_items} products "
+            f"with total {total_expired:,.0f} units expired"
+        )
+        
+        # Top expired products
+        top_expired = gap_df[gap_df['expired_quantity'] > 0].nlargest(5, 'expired_quantity')
+        
+        if not top_expired.empty:
+            with st.expander("📋 Top 5 Expired Products", expanded=False):
+                for _, row in top_expired.iterrows():
+                    st.markdown(
+                        f"**{row.get('pt_code', 'N/A')}** - {row.get('product_name', 'N/A')}: "
+                        f"{row['expired_quantity']:,.0f} units"
+                    )
