@@ -604,7 +604,7 @@ class GAPDataLoader:
     ) -> pd.DataFrame:
         """
         Load expired inventory details with batch information
-        NEW: Added for expired inventory tracking
+        FIXED: GROUP BY only product_id to avoid duplicates
         """
         try:
             # First check if we have inventory data with expiry dates
@@ -612,8 +612,8 @@ class GAPDataLoader:
                 SELECT COUNT(*) 
                 FROM unified_supply_view
                 WHERE supply_source = 'INVENTORY'
-                  AND expiry_date IS NOT NULL
-                  AND expiry_date < CURRENT_DATE()
+                AND expiry_date IS NOT NULL
+                AND expiry_date < CURRENT_DATE()
             """
             
             with _self.get_connection() as conn:
@@ -624,12 +624,13 @@ class GAPDataLoader:
                     return pd.DataFrame()
             
             # Build query for expired inventory from supply view
+            # FIXED: Use MIN/MAX for text fields, GROUP BY only product_id
             query_parts = ["""
                 SELECT 
                     product_id,
-                    pt_code,
-                    product_name,
-                    brand,
+                    MIN(pt_code) as pt_code,
+                    MIN(product_name) as product_name,
+                    MIN(brand) as brand,
                     SUM(available_quantity) as expired_quantity,
                     GROUP_CONCAT(
                         CONCAT(
@@ -641,13 +642,13 @@ class GAPDataLoader:
                     ) as expired_batches_info
                 FROM unified_supply_view
                 WHERE supply_source = 'INVENTORY'
-                  AND expiry_date < CURRENT_DATE()
-                  AND available_quantity > 0
+                AND expiry_date < CURRENT_DATE()
+                AND available_quantity > 0
             """]
             
             params = {}
             
-            # Add filters
+            # Add filters [same as before]
             if entity_name:
                 if exclude_entity:
                     query_parts.append("AND entity_name != :entity_name")
@@ -679,7 +680,8 @@ class GAPDataLoader:
                 for i, brand in enumerate(brand_list):
                     params[f'brand_{i}'] = brand
             
-            query_parts.append("GROUP BY product_id, pt_code, product_name, brand")
+            # FIXED: GROUP BY only product_id to ensure unique rows
+            query_parts.append("GROUP BY product_id")
             
             query = '\n'.join(query_parts)
             
@@ -695,7 +697,13 @@ class GAPDataLoader:
                 lambda x: _self._format_batch_info(x) if pd.notna(x) else ""
             )
             
-            logger.info(f"Loaded expired inventory for {len(df)} products")
+            # Debug: Check for duplicates
+            if df['product_id'].duplicated().any():
+                logger.error("WARNING: Duplicate product_ids in expired inventory!")
+                duplicates = df[df['product_id'].duplicated(keep=False)]
+                logger.error(f"Duplicate products: {duplicates[['product_id', 'product_name']].to_dict('records')}")
+            
+            logger.info(f"Loaded expired inventory for {len(df)} products (unique)")
             return df
             
         except Exception as e:
