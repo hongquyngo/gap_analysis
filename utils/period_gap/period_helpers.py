@@ -35,17 +35,19 @@ def convert_to_period(date_value, period_type: str) -> Optional[str]:
         if period_type == "Daily":
             return date_val.strftime('%Y-%m-%d')
         elif period_type == "Weekly":
-            week_num = date_val.isocalendar().week
-            year = date_val.year
-            return f"Week {week_num} - {year}"
+            # FIXED: Use ISO calendar year to handle year-end weeks correctly
+            # isocalendar() returns (iso_year, week_number, weekday)
+            # iso_year correctly handles weeks that span year boundaries
+            iso_year, week_num, _ = date_val.isocalendar()
+            return f"Week {week_num} - {iso_year}"
         elif period_type == "Monthly":
             return date_val.strftime('%b %Y')
         else:
+            # Fallback for any other period type
             return str(date_val)
     except Exception as e:
         logger.debug(f"Error converting date to period: {e}")
         return None
-
 
 def parse_week_period(period_str: str) -> Tuple[int, int]:
     """
