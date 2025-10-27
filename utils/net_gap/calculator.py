@@ -37,16 +37,31 @@ class GAPCalculator:
     ) -> GAPCalculationResult:
         """Calculate net GAP analysis"""
         try:
+            # Log incoming data structure
+            logger.info(f"GAP Calculation started:")
+            logger.info(f"  - Supply rows: {len(supply_df)}, columns: {list(supply_df.columns) if not supply_df.empty else 'EMPTY'}")
+            logger.info(f"  - Demand rows: {len(demand_df)}, columns: {list(demand_df.columns) if not demand_df.empty else 'EMPTY'}")
+            logger.info(f"  - Selected supply sources: {selected_supply_sources}")
+            logger.info(f"  - Selected demand sources: {selected_demand_sources}")
+            
             # Validate group_by
             if group_by not in ['product', 'brand']:
                 group_by = 'product'
             
-            # Filter by selected sources
-            if selected_supply_sources:
-                supply_df = supply_df[supply_df['supply_source'].isin(selected_supply_sources)]
+            # Filter by selected sources (with defensive checks)
+            if selected_supply_sources and not supply_df.empty:
+                if 'supply_source' in supply_df.columns:
+                    supply_df = supply_df[supply_df['supply_source'].isin(selected_supply_sources)]
+                    logger.info(f"Filtered supply by sources: {selected_supply_sources}")
+                else:
+                    logger.warning("supply_source column not found in supply_df, skipping source filter")
             
-            if selected_demand_sources:
-                demand_df = demand_df[demand_df['demand_source'].isin(selected_demand_sources)]
+            if selected_demand_sources and not demand_df.empty:
+                if 'demand_source' in demand_df.columns:
+                    demand_df = demand_df[demand_df['demand_source'].isin(selected_demand_sources)]
+                    logger.info(f"Filtered demand by sources: {selected_demand_sources}")
+                else:
+                    logger.warning("demand_source column not found in demand_df, skipping source filter")
             
             # Get grouping columns
             group_cols = self._get_group_columns(group_by)
@@ -333,6 +348,15 @@ class GAPCalculator:
     def _calculate_metrics(self, gap_df: pd.DataFrame, include_safety: bool) -> pd.DataFrame:
         """Calculate GAP metrics with improved no-demand handling"""
         
+        # Ensure required columns exist (defensive programming)
+        if 'total_supply' not in gap_df.columns:
+            gap_df['total_supply'] = 0
+            logger.warning("total_supply column missing, initialized to 0")
+        
+        if 'total_demand' not in gap_df.columns:
+            gap_df['total_demand'] = 0
+            logger.warning("total_demand column missing, initialized to 0")
+        
         # Available supply (considering safety stock)
         if include_safety and 'safety_stock_qty' in gap_df.columns:
             gap_df['available_supply'] = np.maximum(
@@ -379,20 +403,28 @@ class GAPCalculator:
         gap_df['priority'] = gap_df.apply(self._get_priority, axis=1)
         gap_df['suggested_action'] = gap_df.apply(self._get_action, axis=1)
         
-        # Financial metrics
-        if 'avg_unit_cost_usd' in gap_df.columns:
-            gap_df['gap_value_usd'] = gap_df['net_gap'] * gap_df['avg_unit_cost_usd']
-        else:
-            gap_df['gap_value_usd'] = 0
+        # Financial metrics - ensure cost/price columns exist
+        if 'avg_unit_cost_usd' not in gap_df.columns:
+            gap_df['avg_unit_cost_usd'] = 0
         
-        if 'avg_selling_price_usd' in gap_df.columns:
-            gap_df['at_risk_value_usd'] = np.where(
-                gap_df['net_gap'] < 0,
-                abs(gap_df['net_gap']) * gap_df['avg_selling_price_usd'],
-                0
-            )
-        else:
-            gap_df['at_risk_value_usd'] = 0
+        if 'avg_selling_price_usd' not in gap_df.columns:
+            gap_df['avg_selling_price_usd'] = 0
+        
+        if 'supply_value_usd' not in gap_df.columns:
+            gap_df['supply_value_usd'] = 0
+        
+        if 'demand_value_usd' not in gap_df.columns:
+            gap_df['demand_value_usd'] = 0
+        
+        # Calculate GAP value
+        gap_df['gap_value_usd'] = gap_df['net_gap'] * gap_df['avg_unit_cost_usd']
+        
+        # Calculate at-risk value
+        gap_df['at_risk_value_usd'] = np.where(
+            gap_df['net_gap'] < 0,
+            abs(gap_df['net_gap']) * gap_df['avg_selling_price_usd'],
+            0
+        )
         
         return gap_df
     
@@ -506,16 +538,16 @@ class GAPCalculator:
         
         metrics = {
             'total_products': len(gap_df),
-            'total_supply': gap_df['total_supply'].sum(),
-            'total_demand': gap_df['total_demand'].sum(),
-            'net_gap': gap_df['net_gap'].sum(),
+            'total_supply': gap_df.get('total_supply', pd.Series([0])).sum(),
+            'total_demand': gap_df.get('total_demand', pd.Series([0])).sum(),
+            'net_gap': gap_df.get('net_gap', pd.Series([0])).sum(),
             
             'shortage_items': len(gap_df[gap_df['gap_status'].isin(shortage_statuses)]),
             'surplus_items': len(gap_df[gap_df['gap_status'].isin(surplus_statuses)]),
-            'critical_items': len(gap_df[gap_df['priority'] == THRESHOLDS['priority']['critical']]),
+            'critical_items': len(gap_df[gap_df.get('priority', 99) == THRESHOLDS['priority']['critical']]),
             
-            'total_shortage': abs(gap_df[gap_df['net_gap'] < 0]['net_gap'].sum()),
-            'total_surplus': gap_df[gap_df['net_gap'] > 0]['net_gap'].sum(),
+            'total_shortage': abs(gap_df[gap_df['net_gap'] < 0]['net_gap'].sum()) if 'net_gap' in gap_df.columns else 0,
+            'total_surplus': gap_df[gap_df['net_gap'] > 0]['net_gap'].sum() if 'net_gap' in gap_df.columns else 0,
             
             'overall_coverage': self._calculate_overall_coverage(gap_df),
             'at_risk_value_usd': gap_df.get('at_risk_value_usd', pd.Series([0])).sum(),
@@ -540,13 +572,23 @@ class GAPCalculator:
     def _calculate_overall_coverage(self, gap_df: pd.DataFrame) -> float:
         """Calculate overall coverage percentage - excluding no-demand items"""
         
+        # Check if required columns exist
+        if 'total_demand' not in gap_df.columns or 'total_supply' not in gap_df.columns:
+            logger.warning("Missing total_demand or total_supply columns for coverage calculation")
+            return 0.0
+        
         # Filter to items with demand > 0
         items_with_demand = gap_df[gap_df['total_demand'] > 0]
         
         if items_with_demand.empty:
             return 100.0  # If no items have demand, coverage is not meaningful
         
-        total_supply = items_with_demand.get('available_supply', items_with_demand['total_supply']).sum()
+        # Use available_supply if exists, otherwise total_supply
+        if 'available_supply' in items_with_demand.columns:
+            total_supply = items_with_demand['available_supply'].sum()
+        else:
+            total_supply = items_with_demand['total_supply'].sum()
+        
         total_demand = items_with_demand['total_demand'].sum()
         
         if total_demand > 0:

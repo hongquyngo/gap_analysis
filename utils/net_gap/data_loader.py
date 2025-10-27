@@ -525,7 +525,8 @@ class GAPDataLoader:
             
             if df.empty:
                 logger.warning("No supply data found for given filters")
-                return pd.DataFrame()
+                # Return empty DataFrame with proper schema to prevent KeyError
+                return _self._get_empty_supply_dataframe()
             
             df = _self._process_supply_dataframe(df)
             
@@ -572,7 +573,8 @@ class GAPDataLoader:
             
             if df.empty:
                 logger.warning("No demand data found for given filters")
-                return pd.DataFrame()
+                # Return empty DataFrame with proper schema to prevent KeyError
+                return _self._get_empty_demand_dataframe()
             
             df = _self._process_demand_dataframe(df)
             
@@ -937,6 +939,36 @@ class GAPDataLoader:
         query_parts.append("ORDER BY product_id, demand_priority, days_to_required")
         
         return '\n'.join(query_parts), params
+    
+    # ==================== EMPTY DATAFRAME SCHEMAS ====================
+    
+    def _get_empty_supply_dataframe(self) -> pd.DataFrame:
+        """Return empty supply DataFrame with proper schema to prevent KeyError"""
+        return pd.DataFrame(columns=[
+            'supply_source', 'product_id', 'product_name', 'brand', 'pt_code',
+            'package_size', 'standard_uom', 'batch_number', 'expiry_date',
+            'days_to_expiry', 'available_quantity', 'availability_date',
+            'days_to_available', 'availability_status', 'warehouse_name',
+            'to_location', 'entity_name', 'unit_cost_usd', 'total_value_usd',
+            'supply_reference_id', 'supplier_name', 'completion_percentage'
+        ])
+    
+    def _get_empty_demand_dataframe(self) -> pd.DataFrame:
+        """Return empty demand DataFrame with proper schema to prevent KeyError"""
+        return pd.DataFrame(columns=[
+            'demand_source', 'demand_priority', 'product_id', 'product_name',
+            'brand', 'pt_code', 'package_size', 'standard_uom', 'customer',
+            'customer_code', 'customer_po_number', 'required_quantity',
+            'required_date', 'days_to_required', 'demand_status', 'urgency_level',
+            'is_allocated', 'allocation_count', 'allocation_coverage_percent',
+            'allocated_quantity', 'unallocated_quantity', 'is_over_committed',
+            'is_pending_over_allocated', 'over_committed_qty_standard',
+            'pending_over_allocated_qty_standard', 'selling_unit_price',
+            'total_value_usd', 'demand_reference_id', 'source_line_id',
+            'source_document_number', 'source_document_date', 'entity_name',
+            'aging_days', 'selling_uom', 'uom_conversion',
+            'total_delivered_standard_quantity', 'original_standard_quantity'
+        ])
     
     # ==================== DATA PROCESSING METHODS ====================
     
