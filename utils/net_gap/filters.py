@@ -5,6 +5,7 @@ Filter Components for GAP Analysis - Enhanced with Quick Add
 - Added bulk PT code input via Quick Add modal
 - Smart parsing of multiple delimiter formats
 - Validation feedback for matched/unmatched codes
+- Fixed widget state synchronization with dynamic keys
 """
 
 import streamlit as st
@@ -149,6 +150,7 @@ def show_quick_add_dialog(products_df: pd.DataFrame, current_selection: List[int
                     validation = parser.validate_codes(parsed_codes, products_df)
                     st.session_state.quick_add_results = validation
                     st.session_state.quick_add_text = input_text
+                    st.rerun()  # FIX: Rerun to show results immediately
                 else:
                     st.warning("No valid PT codes found in input")
             else:
@@ -195,7 +197,7 @@ def show_quick_add_dialog(products_df: pd.DataFrame, current_selection: List[int
                 unmatched_text = ", ".join(results['unmatched_codes'][:20])
                 if len(results['unmatched_codes']) > 20:
                     unmatched_text += f"... and {len(results['unmatched_codes']) - 20} more"
-                st.code(unmatched_text, language=None)
+                st.text(unmatched_text)
         
         # Action buttons
         st.divider()
@@ -210,6 +212,15 @@ def show_quick_add_dialog(products_df: pd.DataFrame, current_selection: List[int
                     st.session_state.quick_add_confirmed = results['matched_ids']
                     st.session_state.quick_add_text = ""
                     st.session_state.quick_add_results = None
+                    
+                    # Increment widget counter to force re-render (FIX FOR BUG)
+                    if 'product_widget_counter' not in st.session_state:
+                        st.session_state.product_widget_counter = 0
+                    st.session_state.product_widget_counter += 1
+                    
+                    # Clear show flag to close dialog
+                    if 'show_quick_add' in st.session_state:
+                        del st.session_state.show_quick_add
                     st.rerun()
         
         with col2:
@@ -217,6 +228,9 @@ def show_quick_add_dialog(products_df: pd.DataFrame, current_selection: List[int
                 st.session_state.quick_add_text = ""
                 st.session_state.quick_add_results = None
                 st.session_state.quick_add_cancelled = True
+                # Clear show flag to close dialog
+                if 'show_quick_add' in st.session_state:
+                    del st.session_state.show_quick_add
                 st.rerun()
 
 
@@ -230,6 +244,10 @@ class GAPFilters:
     
     def render_filters(self) -> Dict[str, Any]:
         """Render all filters with improved layout and Quick Add support"""
+        
+        # Initialize widget counter if not exists (FIX FOR BUG)
+        if 'product_widget_counter' not in st.session_state:
+            st.session_state.product_widget_counter = 0
         
         with st.container():
             # Apply compact CSS with tooltip support
@@ -428,7 +446,7 @@ class GAPFilters:
             return {'selected': None, 'exclude': False}
     
     def _render_product_selector_with_quick_add(self, entity: Optional[str], current: Dict) -> Dict[str, Any]:
-        """Enhanced product selector with Quick Add functionality"""
+        """Enhanced product selector with Quick Add functionality - FIXED WITH DYNAMIC KEY"""
         try:
             products_df = self.data_loader.get_products(entity)
             
@@ -463,32 +481,47 @@ class GAPFilters:
             
             # Get selection from session state if exists, otherwise from current filters
             session_key = 'product_selection_state'
-            if session_key in st.session_state:
+            
+            # Check if Quick Add was confirmed (do this BEFORE getting current selection)
+            if 'quick_add_confirmed' in st.session_state:
+                new_ids = st.session_state.quick_add_confirmed
+                # Get current selection
+                if session_key in st.session_state:
+                    current_selection = st.session_state[session_key]
+                else:
+                    current_selection = current.get('products', [])
+                
+                # Merge: add new IDs to existing selection (remove duplicates)
+                merged_selection = list(set(current_selection + new_ids))
+                # Filter to only valid product IDs
+                valid_selected = [p for p in merged_selection if p in product_map]
+                # Save to session state
+                st.session_state[session_key] = valid_selected
+                
+                # Clear the flag
+                del st.session_state.quick_add_confirmed
+                logger.info(f"Quick Add: Added {len(new_ids)} products, total now: {len(valid_selected)}")
+            elif session_key in st.session_state:
                 valid_selected = st.session_state[session_key]
             else:
                 current_products = current.get('products', [])
                 valid_selected = [p for p in current_products if p in product_map]
-            
-            # Check if Quick Add was confirmed
-            if 'quick_add_confirmed' in st.session_state:
-                new_ids = st.session_state.quick_add_confirmed
-                # Merge with existing selection and save to session state
-                valid_selected = list(set(valid_selected + new_ids))
-                st.session_state[session_key] = valid_selected
-                del st.session_state.quick_add_confirmed
             
             # Layout with Quick Add button
             st.markdown("**Products**")
             sub1, sub2, sub3 = st.columns([4.5, 1, 0.5])
             
             with sub1:
+                # FIX: Use dynamic key based on counter to force re-render when needed
+                widget_key = f"products_multi_{st.session_state.product_widget_counter}"
+                
                 selected = st.multiselect(
                     "Products",
                     options=list(product_map.keys()),
                     default=valid_selected,
                     format_func=lambda x: product_map[x]['display'],
                     placeholder=f"All ({len(products_df)} available)",
-                    key="products_multi",
+                    key=widget_key,  # Dynamic key
                     label_visibility="collapsed",
                     help="Select products or use Quick Add for bulk import"
                 )
@@ -512,7 +545,8 @@ class GAPFilters:
             # Show Quick Add dialog if triggered
             if st.session_state.get('show_quick_add'):
                 show_quick_add_dialog(products_df, selected, exclude)
-                del st.session_state.show_quick_add
+                # Don't delete flag here - let dialog buttons handle it
+                # This prevents dialog from staying open after rerun
             
             # Clear cancelled flag if set
             if st.session_state.get('quick_add_cancelled'):

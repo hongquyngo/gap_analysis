@@ -1,7 +1,7 @@
 # utils/net_gap/state.py
 
 """
-Simplified state management for GAP Analysis - Fixed Reset
+Simplified state management for GAP Analysis - Fixed Reset with Widget Counter
 """
 
 import streamlit as st
@@ -20,7 +20,8 @@ class GAPState:
     KEY_RESULT = 'gap_result'
     KEY_PAGE = 'current_page'
     KEY_DIALOG_PAGE = 'dialog_page'
-    KEY_PRODUCT_SELECTION = 'product_selection_state'  # Added key for product selection
+    KEY_PRODUCT_SELECTION = 'product_selection_state'
+    KEY_WIDGET_COUNTER = 'product_widget_counter'  # Added key for widget counter
     
     def __init__(self):
         self._init_defaults()
@@ -35,6 +36,8 @@ class GAPState:
             st.session_state[self.KEY_PAGE] = 1
         if self.KEY_DIALOG_PAGE not in st.session_state:
             st.session_state[self.KEY_DIALOG_PAGE] = 1
+        if self.KEY_WIDGET_COUNTER not in st.session_state:
+            st.session_state[self.KEY_WIDGET_COUNTER] = 0
     
     @staticmethod
     def get_default_filters() -> Dict[str, Any]:
@@ -85,7 +88,10 @@ class GAPState:
         st.session_state[self.KEY_RESULT] = None
         st.session_state[self.KEY_PAGE] = 1
         
-        # Clear product selection state (FIX for the bug)
+        # Reset widget counter to force re-render
+        st.session_state[self.KEY_WIDGET_COUNTER] = 0
+        
+        # Clear product selection state
         if self.KEY_PRODUCT_SELECTION in st.session_state:
             del st.session_state[self.KEY_PRODUCT_SELECTION]
         
@@ -109,6 +115,14 @@ class GAPState:
         for key in dialog_keys:
             if key in st.session_state:
                 del st.session_state[key]
+        
+        # Clear multiselect widget keys (all variations)
+        widget_keys_to_clear = []
+        for key in st.session_state.keys():
+            if key.startswith('products_multi'):
+                widget_keys_to_clear.append(key)
+        for key in widget_keys_to_clear:
+            del st.session_state[key]
         
         logger.info("All filters and states reset to defaults")
     
@@ -159,6 +173,7 @@ class GAPState:
             self.KEY_PAGE,
             self.KEY_DIALOG_PAGE,
             self.KEY_PRODUCT_SELECTION,
+            self.KEY_WIDGET_COUNTER,
             'quick_add_text',
             'quick_add_results',
             'quick_add_confirmed',
@@ -170,14 +185,31 @@ class GAPState:
             'search'
         ]
         
+        # Clear widget keys (all variations)
+        widget_keys_to_clear = []
+        for key in st.session_state.keys():
+            if key.startswith('products_multi'):
+                widget_keys_to_clear.append(key)
+        
         # Clear everything
         for key in all_keys:
+            if key in st.session_state:
+                del st.session_state[key]
+        
+        for key in widget_keys_to_clear:
             if key in st.session_state:
                 del st.session_state[key]
         
         # Re-initialize defaults
         self._init_defaults()
         logger.info("All state completely cleared")
+    
+    def increment_widget_counter(self):
+        """Increment widget counter to force re-render"""
+        if self.KEY_WIDGET_COUNTER not in st.session_state:
+            st.session_state[self.KEY_WIDGET_COUNTER] = 0
+        st.session_state[self.KEY_WIDGET_COUNTER] += 1
+        logger.info(f"Widget counter incremented to {st.session_state[self.KEY_WIDGET_COUNTER]}")
 
 
 # Singleton instance
