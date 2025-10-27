@@ -1,9 +1,10 @@
 # pages/2_📅_Period_GAP_Analysis.py
 """
-Period-based Supply-Demand GAP Analysis - Version 3.3
+Period-based Supply-Demand GAP Analysis - Version 3.4
 - Analyzes supply-demand gaps by time periods with carry-forward logic
 - Enhanced with ETD/ETA selection for OC analysis
 - Default to ETA for OC timing analysis
+- Quick Add: Bulk PT code import feature for efficient product selection
 """
 
 import streamlit as st
@@ -33,7 +34,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from utils.auth import AuthManager
 
 # Constants
-VERSION = "3.3"
+VERSION = "3.4"  # Added Quick Add feature
 MAX_EXPORT_ROWS = 50000
 DATA_LOAD_WARNING_SECONDS = 5
 DEFAULT_PERIOD_TYPE = "Weekly"
@@ -318,16 +319,72 @@ def render_filters(filter_data: Dict[str, Any]) -> Dict[str, Any]:
                 help="Exclude selected legal entities"
             )
         
-        # Product filter (5 parts + 0.5 for checkbox)
+        # Product filter with Quick Add (5 parts + 0.5 for checkbox)
         with filter_cols[2]:
             # Use the formatted product options
             product_options = filter_data.get('product_options', [])
-            selected_products = st.multiselect(
-                "Product",
-                product_options,
-                key="pgap_product_filter",
-                placeholder="All products" if product_options else "No products available"
-            )
+            
+            # Session key for storing selection (separate from widget key)
+            session_key = 'pgap_product_selection'
+            
+            # Handle Quick Add confirmation BEFORE creating widget
+            if 'pgap_quick_add_confirmed' in st.session_state:
+                new_products = st.session_state.pgap_quick_add_confirmed
+                if new_products and isinstance(new_products, list):
+                    # Get current selection
+                    current_selection = st.session_state.get(session_key, [])
+                    # Merge: add new products to existing selection
+                    merged_selection = list(set(current_selection + new_products))
+                    # Filter to only valid products
+                    valid_selected = [p for p in merged_selection if p in product_options]
+                    st.session_state[session_key] = valid_selected
+                
+                # Clear the confirmation flag
+                del st.session_state.pgap_quick_add_confirmed
+                
+                # Increment widget counter to force re-render
+                if 'pgap_product_widget_counter' not in st.session_state:
+                    st.session_state['pgap_product_widget_counter'] = 0
+                st.session_state['pgap_product_widget_counter'] += 1
+            
+            # Get default selection
+            default_selection = st.session_state.get(session_key, [])
+            # Filter to only valid products
+            default_selection = [p for p in default_selection if p in product_options]
+            
+            # Clear cancelled flag
+            if st.session_state.get('pgap_quick_add_cancelled'):
+                del st.session_state.pgap_quick_add_cancelled
+            
+            # Create sub-columns for multiselect + Quick Add button
+            sub_col1, sub_col2 = st.columns([4.5, 1.5])
+            
+            with sub_col1:
+                # Use dynamic key based on counter
+                widget_counter = st.session_state.get('pgap_product_widget_counter', 0)
+                widget_key = f"pgap_product_filter_{widget_counter}"
+                
+                selected_products = st.multiselect(
+                    "Product",
+                    product_options,
+                    default=default_selection,
+                    key=widget_key,
+                    placeholder="All products" if product_options else "No products available"
+                )
+                
+                # Update session state with current selection
+                st.session_state[session_key] = selected_products
+            
+            with sub_col2:
+                # Quick Add button
+                if st.button("📋 Quick Add", key="pgap_quick_add_btn", use_container_width=True,
+                           help="Bulk import PT codes"):
+                    st.session_state.pgap_show_quick_add = True
+            
+            # Show Quick Add dialog if triggered
+            if st.session_state.get('pgap_show_quick_add'):
+                from utils.period_gap.quick_add_components import show_quick_add_dialog_for_products
+                show_quick_add_dialog_for_products(product_options, selected_products, False)
             
             # Extract PT codes from formatted selections
             filters['product'] = []
@@ -338,6 +395,7 @@ def render_filters(filter_data: Dict[str, Any]) -> Dict[str, Any]:
                 else:
                     pt_code = selection.strip()
                 filters['product'].append(pt_code)
+
         
         with filter_cols[3]:
             filters['exclude_product'] = st.checkbox(
@@ -346,6 +404,7 @@ def render_filters(filter_data: Dict[str, Any]) -> Dict[str, Any]:
                 key="pgap_exclude_product",
                 help="Exclude selected products"
             )
+
         
         # Brand filter (2 parts + 0.5 for checkbox)
         with filter_cols[4]:

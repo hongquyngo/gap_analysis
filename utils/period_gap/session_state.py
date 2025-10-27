@@ -1,7 +1,7 @@
 # utils/period_gap/session_state.py
 """
 Complete Session State Management for Period GAP Analysis
-Version 2.1 - Removed customer filter support
+Version 2.2 - Added Quick Add PT code support
 """
 
 import streamlit as st
@@ -11,7 +11,6 @@ from datetime import datetime
 def initialize_session_state():
     """Initialize all required session state variables for Period GAP"""
     
-    # Core session state defaults
     defaults = {
         # Data loading status
         'period_gap_data_loaded': False,
@@ -61,7 +60,16 @@ def initialize_session_state():
         'pgap_exclude_brand': False,
         'pgap_selected_entities_excluded': [],
         'pgap_selected_products_excluded': [],
-        'pgap_selected_brands_excluded': []
+        'pgap_selected_brands_excluded': [],
+        
+        # Quick Add PT code states
+        'pgap_quick_add_text': '',
+        'pgap_quick_add_results': None,
+        # Note: pgap_quick_add_confirmed is NOT initialized here
+        # It's only set when user confirms Quick Add selection
+        'pgap_quick_add_cancelled': False,
+        'pgap_show_quick_add': False,
+        'pgap_product_widget_counter': 0
     }
     
     for key, default_value in defaults.items():
@@ -101,7 +109,6 @@ def save_filter_state(filter_config: Dict[str, Any]):
     Args:
         filter_config: Dictionary containing filter settings and exclude flags
     """
-    # Save main filter selections
     if 'entity' in filter_config:
         st.session_state['pgap_selected_entities'] = filter_config['entity']
         st.session_state['pgap_exclude_entity'] = filter_config.get('exclude_entity', False)
@@ -114,7 +121,6 @@ def save_filter_state(filter_config: Dict[str, Any]):
         st.session_state['pgap_selected_brands'] = filter_config['brand']
         st.session_state['pgap_exclude_brand'] = filter_config.get('exclude_brand', False)
     
-    # Save date range
     if 'start_date' in filter_config:
         st.session_state['pgap_start_date'] = filter_config['start_date']
     if 'end_date' in filter_config:
@@ -168,13 +174,11 @@ def save_period_gap_state(data: dict):
     st.session_state['period_gap_analysis_ran'] = True
     st.session_state['period_gap_load_time'] = datetime.now()
     
-    # Also save for cross-page access
     if 'demand' in data:
         st.session_state['demand_filtered'] = data['demand']
     if 'supply' in data:
         st.session_state['supply_filtered'] = data['supply']
     
-    # Save filter configuration if present
     if 'filters' in data:
         save_filter_state(data['filters'])
 
@@ -193,7 +197,7 @@ def get_period_gap_state() -> dict:
 
 def update_filter_cache(entities: list, products: list, brands: list):
     """
-    Update filter options cache for dropdowns (removed customers parameter)
+    Update filter options cache for dropdowns
     
     Args:
         entities: List of entities
@@ -247,7 +251,7 @@ def get_gap_analysis_for_allocation() -> dict:
             'supply_df': st.session_state.get('supply_filtered'),
             'period_type': st.session_state.get('period_gap_period_type', 'Weekly'),
             'analysis_time': st.session_state.get('last_analysis_time'),
-            'filters': get_filter_state()  # Include filter configuration
+            'filters': get_filter_state()
         }
     return {
         'gap_df': None,
@@ -269,10 +273,8 @@ def get_gap_analysis_for_po_suggestions() -> dict:
     gap_df = st.session_state.get('gap_analysis_result')
     
     if gap_df is not None and not gap_df.empty:
-        # Get shortage products
         shortage_df = gap_df[gap_df['gap_quantity'] < 0].copy()
         
-        # Aggregate by product
         if not shortage_df.empty:
             shortage_summary = shortage_df.groupby(['pt_code', 'product_name']).agg({
                 'gap_quantity': lambda x: x.abs().sum(),
@@ -284,7 +286,7 @@ def get_gap_analysis_for_po_suggestions() -> dict:
                 'shortage_products': shortage_summary,
                 'period_type': st.session_state.get('period_gap_period_type', 'Weekly'),
                 'analysis_time': st.session_state.get('last_analysis_time'),
-                'filters': get_filter_state()  # Include filter configuration
+                'filters': get_filter_state()
             }
     
     return {
@@ -304,7 +306,6 @@ def clear_all_gap_data():
     for key in gap_keys:
         del st.session_state[key]
     
-    # Also clear cross-page data
     cross_page_keys = [
         'gap_analysis_result',
         'demand_filtered',
@@ -328,7 +329,6 @@ def get_filter_summary() -> str:
     filter_state = get_filter_state()
     summary_parts = []
     
-    # Check each filter
     if filter_state['entity']:
         mode = "excluding" if filter_state['exclude_entity'] else "including"
         count = len(filter_state['entity'])
@@ -363,3 +363,31 @@ def is_filter_active() -> bool:
         filter_state['product'],
         filter_state['brand']
     ])
+
+
+def clear_quick_add_state():
+    """Clear all Quick Add related session state"""
+    quick_add_keys = [
+        'pgap_quick_add_text',
+        'pgap_quick_add_results',
+        'pgap_quick_add_confirmed',
+        'pgap_quick_add_cancelled',
+        'pgap_show_quick_add'
+    ]
+    
+    for key in quick_add_keys:
+        if key in st.session_state:
+            del st.session_state[key]
+
+
+def increment_product_widget_counter():
+    """Increment product widget counter to force re-render"""
+    if 'pgap_product_widget_counter' not in st.session_state:
+        st.session_state['pgap_product_widget_counter'] = 0
+    st.session_state['pgap_product_widget_counter'] += 1
+
+
+def get_product_widget_key() -> str:
+    """Get current product widget key based on counter"""
+    counter = st.session_state.get('pgap_product_widget_counter', 0)
+    return f"pgap_products_multi_{counter}"
