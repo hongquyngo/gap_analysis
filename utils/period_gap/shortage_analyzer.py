@@ -1,7 +1,9 @@
 # utils/period_gap/shortage_analyzer.py
 """
-Shortage Analyzer Module
-Categorizes shortage types into Net Shortage vs Timing Gap
+Shortage & Surplus Analyzer Module
+Version 3.0 - Refactored with mutually exclusive main categories
+Main Categories: Net Shortage, Net Surplus, Balanced (based on total supply vs demand)
+Sub-Categories: Timing Shortage, Timing Surplus (cross-cutting, based on period variations)
 """
 
 import pandas as pd
@@ -11,31 +13,32 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def categorize_shortage_type(gap_df: pd.DataFrame) -> Dict[str, Set[str]]:
+def categorize_main_category(gap_df: pd.DataFrame) -> Dict[str, Set[str]]:
     """
-    Categorize products based on shortage type:
-    - Net Shortage: Total supply < Total demand (need new orders)
-    - Timing Gap: Total supply >= Total demand but timing mismatch (need expedite/reschedule)
+    Categorize products into MUTUALLY EXCLUSIVE main categories based on net position:
+    - Net Shortage: Total supply < Total demand
+    - Net Surplus: Total supply > Total demand
+    - Balanced: Total supply == Total demand (exactly equal)
     
     Args:
         gap_df: GAP analysis dataframe with columns:
                 - pt_code: Product code
-                - gap_quantity: GAP amount for each period
                 - total_demand_qty: Demand quantity per period
                 - supply_in_period: Supply quantity per period
-                - backlog_to_next (optional): Backlog carried to next period
     
     Returns:
-        Dictionary with two keys:
+        Dictionary with three keys (mutually exclusive):
         - 'net_shortage': Set of product codes with net shortage
-        - 'timing_gap': Set of product codes with timing gaps only
+        - 'net_surplus': Set of product codes with net surplus
+        - 'balanced': Set of product codes with exact balance
     """
     
     if gap_df.empty:
-        return {'net_shortage': set(), 'timing_gap': set()}
+        return {'net_shortage': set(), 'net_surplus': set(), 'balanced': set()}
     
     net_shortage_products = set()
-    timing_gap_products = set()
+    net_surplus_products = set()
+    balanced_products = set()
     
     # Group by product
     for pt_code in gap_df['pt_code'].unique():
@@ -45,52 +48,209 @@ def categorize_shortage_type(gap_df: pd.DataFrame) -> Dict[str, Set[str]]:
         total_demand = product_df['total_demand_qty'].sum()
         total_supply = product_df['supply_in_period'].sum()
         
-        # Check for any shortage periods
-        has_shortage = (product_df['gap_quantity'] < 0).any()
-        
-        # Determine shortage type
+        # Categorize based on net position (mutually exclusive)
         if total_supply < total_demand:
-            # Net shortage - insufficient total supply
             net_shortage_products.add(pt_code)
-        elif has_shortage:
-            # Has shortage in some periods but total supply is sufficient
-            # This is a timing gap issue
-            timing_gap_products.add(pt_code)
-        
-        # Alternative check using backlog if available
-        if 'backlog_to_next' in product_df.columns:
-            # Check final backlog
-            final_backlog = product_df['backlog_to_next'].iloc[-1] if not product_df.empty else 0
-            if final_backlog > 0:
-                # If there's backlog at the end, it's a net shortage
-                net_shortage_products.add(pt_code)
-                # Remove from timing gap if it was there
-                timing_gap_products.discard(pt_code)
+        elif total_supply > total_demand:
+            net_surplus_products.add(pt_code)
+        else:
+            # Exactly equal (balanced)
+            balanced_products.add(pt_code)
     
-    logger.info(f"Categorization complete: {len(net_shortage_products)} net shortage, "
-                f"{len(timing_gap_products)} timing gap products")
+    logger.info(f"Main categorization: {len(net_shortage_products)} net shortage, "
+                f"{len(net_surplus_products)} net surplus, {len(balanced_products)} balanced")
     
     return {
         'net_shortage': net_shortage_products,
+        'net_surplus': net_surplus_products,
+        'balanced': balanced_products
+    }
+
+
+def categorize_timing_issues(gap_df: pd.DataFrame) -> Dict[str, Set[str]]:
+    """
+    Categorize products with TIMING ISSUES (cross-cutting, not mutually exclusive):
+    - Timing Shortage: Has at least one period with shortage (gap_quantity < 0)
+    - Timing Surplus: Has at least one period with surplus (gap_quantity > 0)
+    
+    Note: A product can have BOTH timing shortage and timing surplus
+    
+    Args:
+        gap_df: GAP analysis dataframe with columns:
+                - pt_code: Product code
+                - gap_quantity: GAP amount for each period
+    
+    Returns:
+        Dictionary with two keys (NOT mutually exclusive):
+        - 'timing_shortage': Set of product codes with period shortages
+        - 'timing_surplus': Set of product codes with period surpluses
+    """
+    
+    if gap_df.empty:
+        return {'timing_shortage': set(), 'timing_surplus': set()}
+    
+    timing_shortage_products = set()
+    timing_surplus_products = set()
+    
+    # Group by product
+    for pt_code in gap_df['pt_code'].unique():
+        product_df = gap_df[gap_df['pt_code'] == pt_code].copy()
+        
+        # Check for timing issues
+        has_shortage_periods = (product_df['gap_quantity'] < 0).any()
+        has_surplus_periods = (product_df['gap_quantity'] > 0).any()
+        
+        if has_shortage_periods:
+            timing_shortage_products.add(pt_code)
+        
+        if has_surplus_periods:
+            timing_surplus_products.add(pt_code)
+    
+    logger.info(f"Timing categorization: {len(timing_shortage_products)} with timing shortage, "
+                f"{len(timing_surplus_products)} with timing surplus")
+    
+    return {
+        'timing_shortage': timing_shortage_products,
+        'timing_surplus': timing_surplus_products
+    }
+
+
+def categorize_products(gap_df: pd.DataFrame) -> Dict[str, Set[str]]:
+    """
+    Unified categorization function that combines main categories and timing issues
+    
+    This function provides a complete categorization by merging results from:
+    - categorize_main_category(): Mutually exclusive categories (net_shortage, net_surplus, balanced)
+    - categorize_timing_issues(): Cross-cutting timing flags (timing_shortage, timing_surplus)
+    
+    Args:
+        gap_df: GAP analysis dataframe with required columns:
+                - pt_code: Product code
+                - total_demand_qty: Demand quantity per period
+                - supply_in_period: Supply quantity per period
+                - gap_quantity: GAP amount for each period
+    
+    Returns:
+        Dictionary with 5 keys:
+        - 'net_shortage': Set of product codes with net shortage (main category)
+        - 'net_surplus': Set of product codes with net surplus (main category)
+        - 'balanced': Set of product codes with exact balance (main category)
+        - 'timing_shortage': Set of product codes with period shortages (timing flag)
+        - 'timing_surplus': Set of product codes with period surpluses (timing flag)
+    """
+    
+    if gap_df.empty:
+        return {
+            'net_shortage': set(),
+            'net_surplus': set(),
+            'balanced': set(),
+            'timing_shortage': set(),
+            'timing_surplus': set()
+        }
+    
+    # Get main categorization (mutually exclusive)
+    main_cats = categorize_main_category(gap_df)
+    
+    # Get timing categorization (cross-cutting)
+    timing_cats = categorize_timing_issues(gap_df)
+    
+    # Combine results
+    result = {
+        'net_shortage': main_cats['net_shortage'],
+        'net_surplus': main_cats['net_surplus'],
+        'balanced': main_cats['balanced'],
+        'timing_shortage': timing_cats['timing_shortage'],
+        'timing_surplus': timing_cats['timing_surplus']
+    }
+    
+    logger.info(f"Complete categorization: {len(result['net_shortage'])} net shortage, "
+                f"{len(result['net_surplus'])} net surplus, {len(result['balanced'])} balanced, "
+                f"{len(result['timing_shortage'])} timing shortage, {len(result['timing_surplus'])} timing surplus")
+    
+    return result
+
+
+def categorize_shortage_type(gap_df: pd.DataFrame) -> Dict[str, Set[str]]:
+    """
+    Legacy function for backward compatibility
+    Maps old logic to new main category logic
+    
+    Returns:
+        Dictionary with keys:
+        - 'net_shortage': Products with net shortage
+        - 'timing_gap': Products with timing shortage (but not net shortage)
+    """
+    main_cats = categorize_main_category(gap_df)
+    timing_cats = categorize_timing_issues(gap_df)
+    
+    # Timing Gap = Has timing shortage but NOT net shortage
+    timing_gap_products = timing_cats['timing_shortage'] - main_cats['net_shortage']
+    
+    return {
+        'net_shortage': main_cats['net_shortage'],
         'timing_gap': timing_gap_products
     }
 
 
+def categorize_surplus_type(gap_df: pd.DataFrame) -> Dict[str, Set[str]]:
+    """
+    Legacy function for backward compatibility
+    Maps old logic to new main category logic
+    
+    Returns:
+        Dictionary with keys:
+        - 'net_surplus': Products with net surplus
+        - 'timing_surplus': Products with timing surplus (but not net surplus)
+    """
+    main_cats = categorize_main_category(gap_df)
+    timing_cats = categorize_timing_issues(gap_df)
+    
+    # Timing Surplus (for old logic) = Has timing surplus but NOT net surplus
+    timing_surplus_products = timing_cats['timing_surplus'] - main_cats['net_surplus']
+    
+    return {
+        'net_surplus': main_cats['net_surplus'],
+        'timing_surplus': timing_surplus_products
+    }
+
+
+def get_product_main_category(pt_code: str, gap_df: pd.DataFrame) -> str:
+    """
+    Get the main category for a single product
+    
+    Args:
+        pt_code: Product code
+        gap_df: GAP analysis dataframe
+    
+    Returns:
+        Main category: "Net Shortage", "Net Surplus", or "Balanced"
+    """
+    main_cats = categorize_main_category(gap_df)
+    
+    if pt_code in main_cats['net_shortage']:
+        return "Net Shortage"
+    elif pt_code in main_cats['net_surplus']:
+        return "Net Surplus"
+    else:
+        return "Balanced"
+
+
 def get_shortage_summary(gap_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Get summary of shortage categorization with actionable insights
+    Get summary of categorization with actionable insights
     
     Args:
         gap_df: GAP analysis dataframe
     
     Returns:
-        Summary dataframe with shortage categorization and recommended actions
+        Summary dataframe with categorization and recommended actions
     """
     
     if gap_df.empty:
         return pd.DataFrame()
     
-    categorization = categorize_shortage_type(gap_df)
+    main_categorization = categorize_main_category(gap_df)
+    timing_categorization = categorize_timing_issues(gap_df)
     summary_data = []
     
     for pt_code in gap_df['pt_code'].unique():
@@ -105,26 +265,33 @@ def get_shortage_summary(gap_df: pd.DataFrame) -> pd.DataFrame:
         total_supply = product_df['supply_in_period'].sum()
         net_position = total_supply - total_demand
         
-        # Count shortage periods
+        # Count shortage and surplus periods
         shortage_periods = (product_df['gap_quantity'] < 0).sum()
+        surplus_periods = (product_df['gap_quantity'] > 0).sum()
         total_periods = len(product_df)
         
-        # Maximum shortage in any period
+        # Maximum shortage and surplus in any period
         max_shortage = abs(product_df[product_df['gap_quantity'] < 0]['gap_quantity'].min()) if shortage_periods > 0 else 0
+        max_surplus = product_df[product_df['gap_quantity'] > 0]['gap_quantity'].max() if surplus_periods > 0 else 0
         
-        # Determine category and action
-        if pt_code in categorization['net_shortage']:
+        # Determine main category
+        if pt_code in main_categorization['net_shortage']:
             category = "Net Shortage"
             action = "Place New Order"
             priority = "High"
-        elif pt_code in categorization['timing_gap']:
-            category = "Timing Gap"
-            action = "Expedite/Reschedule"
-            priority = "Medium"
-        else:
-            category = "Sufficient"
-            action = "Monitor"
+        elif pt_code in main_categorization['net_surplus']:
+            category = "Net Surplus"
+            action = "Review Excess Stock"
             priority = "Low"
+        else:
+            category = "Balanced"
+            # Check if has timing issues
+            if pt_code in timing_categorization['timing_shortage']:
+                action = "Expedite/Reschedule"
+                priority = "Medium"
+            else:
+                action = "Monitor"
+                priority = "Low"
         
         summary_data.append({
             'pt_code': pt_code,
@@ -135,8 +302,10 @@ def get_shortage_summary(gap_df: pd.DataFrame) -> pd.DataFrame:
             'total_supply': total_supply,
             'net_position': net_position,
             'shortage_periods': shortage_periods,
+            'surplus_periods': surplus_periods,
             'total_periods': total_periods,
             'max_shortage': max_shortage,
+            'max_surplus': max_surplus,
             'recommended_action': action,
             'priority': priority
         })
@@ -155,7 +324,7 @@ def get_shortage_summary(gap_df: pd.DataFrame) -> pd.DataFrame:
 def identify_expedite_candidates(gap_df: pd.DataFrame, 
                                 supply_df: pd.DataFrame = None) -> pd.DataFrame:
     """
-    Identify which supply orders could be expedited to resolve timing gaps
+    Identify which supply orders could be expedited to resolve timing shortages
     
     Args:
         gap_df: GAP analysis dataframe
@@ -165,15 +334,15 @@ def identify_expedite_candidates(gap_df: pd.DataFrame,
         Dataframe of expedite candidates with recommended actions
     """
     
-    categorization = categorize_shortage_type(gap_df)
-    timing_gap_products = categorization['timing_gap']
+    timing_categorization = categorize_timing_issues(gap_df)
+    timing_shortage_products = timing_categorization['timing_shortage']
     
-    if not timing_gap_products or supply_df is None or supply_df.empty:
+    if not timing_shortage_products or supply_df is None or supply_df.empty:
         return pd.DataFrame()
     
     expedite_candidates = []
     
-    for pt_code in timing_gap_products:
+    for pt_code in timing_shortage_products:
         # Get product GAP data
         product_gap = gap_df[gap_df['pt_code'] == pt_code].copy()
         
@@ -189,7 +358,6 @@ def identify_expedite_candidates(gap_df: pd.DataFrame,
         product_supply = supply_df[supply_df['pt_code'] == pt_code].copy()
         
         # Look for supply arriving after the shortage period
-        # This is simplified - in practice you'd need to parse periods properly
         future_supply = product_supply[product_supply['source_type'].isin(['Pending PO', 'Pending CAN'])]
         
         if not future_supply.empty:
@@ -220,8 +388,8 @@ def calculate_order_requirements(gap_df: pd.DataFrame) -> pd.DataFrame:
         Dataframe with order requirements for each product
     """
     
-    categorization = categorize_shortage_type(gap_df)
-    net_shortage_products = categorization['net_shortage']
+    main_categorization = categorize_main_category(gap_df)
+    net_shortage_products = main_categorization['net_shortage']
     
     if not net_shortage_products:
         return pd.DataFrame()
@@ -270,9 +438,68 @@ def calculate_order_requirements(gap_df: pd.DataFrame) -> pd.DataFrame:
     return order_df
 
 
+def calculate_surplus_review(gap_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calculate surplus review for products with net surplus
+    
+    Args:
+        gap_df: GAP analysis dataframe
+    
+    Returns:
+        Dataframe with surplus review information for each product
+    """
+    
+    main_categorization = categorize_main_category(gap_df)
+    net_surplus_products = main_categorization['net_surplus']
+    
+    if not net_surplus_products:
+        return pd.DataFrame()
+    
+    surplus_review = []
+    
+    for pt_code in net_surplus_products:
+        product_gap = gap_df[gap_df['pt_code'] == pt_code]
+        
+        # Calculate total surplus
+        total_demand = product_gap['total_demand_qty'].sum()
+        total_supply = product_gap['supply_in_period'].sum()
+        net_surplus = total_supply - total_demand
+        
+        # Find surplus distribution
+        surplus_periods = product_gap[product_gap['gap_quantity'] > 0]
+        avg_surplus_per_period = surplus_periods['gap_quantity'].mean() if not surplus_periods.empty else 0
+        
+        # Calculate inventory holding implications
+        surplus_percentage = (net_surplus / total_demand * 100) if total_demand > 0 else 0
+        
+        surplus_review.append({
+            'pt_code': pt_code,
+            'product_name': product_gap['product_name'].iloc[0] if 'product_name' in product_gap.columns else '',
+            'brand': product_gap['brand'].iloc[0] if 'brand' in product_gap.columns else '',
+            'package_size': product_gap['package_size'].iloc[0] if 'package_size' in product_gap.columns else '',
+            'standard_uom': product_gap['standard_uom'].iloc[0] if 'standard_uom' in product_gap.columns else '',
+            'surplus_quantity': net_surplus,
+            'total_demand': total_demand,
+            'total_supply': total_supply,
+            'surplus_percentage': surplus_percentage,
+            'surplus_periods': len(surplus_periods),
+            'total_periods': len(product_gap),
+            'avg_surplus_per_period': avg_surplus_per_period,
+            'recommendation': 'Review excess stock' if surplus_percentage > 50 else 'Monitor'
+        })
+    
+    surplus_df = pd.DataFrame(surplus_review)
+    
+    # Sort by surplus quantity descending
+    if not surplus_df.empty:
+        surplus_df = surplus_df.sort_values('surplus_quantity', ascending=False)
+    
+    return surplus_df
+
+
 def get_action_summary(gap_df: pd.DataFrame, supply_df: pd.DataFrame = None) -> Dict[str, pd.DataFrame]:
     """
-    Get comprehensive action summary for all shortage types
+    Get comprehensive action summary for all categories
     
     Args:
         gap_df: GAP analysis dataframe
@@ -283,10 +510,12 @@ def get_action_summary(gap_df: pd.DataFrame, supply_df: pd.DataFrame = None) -> 
         - 'overview': Overall categorization summary
         - 'order_requirements': New orders needed
         - 'expedite_candidates': Orders to expedite/reschedule
+        - 'surplus_review': Surplus products to review
     """
     
     return {
         'overview': get_shortage_summary(gap_df),
         'order_requirements': calculate_order_requirements(gap_df),
-        'expedite_candidates': identify_expedite_candidates(gap_df, supply_df)
+        'expedite_candidates': identify_expedite_candidates(gap_df, supply_df),
+        'surplus_review': calculate_surplus_review(gap_df)
     }

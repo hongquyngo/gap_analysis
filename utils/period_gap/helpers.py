@@ -2,6 +2,7 @@
 """
 General Helper Functions
 Excel export, period manipulation, session state management
+Version 2.0 - Enhanced with metadata export and improved period formatting
 """
 
 import pandas as pd
@@ -103,6 +104,328 @@ def export_multiple_sheets(dataframes_dict: Dict[str, pd.DataFrame]) -> bytes:
     except Exception as e:
         logger.error(f"Error exporting multiple sheets: {e}")
         raise
+
+
+def create_metadata_sheet(
+    filter_values: Dict[str, Any],
+    calc_options: Dict[str, Any],
+    gap_df: pd.DataFrame,
+    display_filters: Dict[str, Any],
+    df_demand_filtered: pd.DataFrame,
+    df_supply_filtered: pd.DataFrame
+) -> pd.DataFrame:
+    """
+    Create Export_Info metadata sheet with analysis parameters and summary statistics
+    
+    Args:
+        filter_values: Data filters applied
+        calc_options: Calculation options used
+        gap_df: GAP analysis results
+        display_filters: Display filters applied
+        df_demand_filtered: Filtered demand data
+        df_supply_filtered: Filtered supply data
+    
+    Returns:
+        DataFrame formatted for metadata sheet
+    """
+    from .shortage_analyzer import categorize_products
+    
+    metadata_rows = []
+    
+    # === EXPORT INFORMATION ===
+    metadata_rows.append(['EXPORT INFORMATION', ''])
+    metadata_rows.append(['Export Date', datetime.now().strftime('%Y-%m-%d %H:%M:%S')])
+    metadata_rows.append(['Report Type', 'Period GAP Analysis'])
+    metadata_rows.append(['', ''])
+    
+    # === CALCULATION PARAMETERS ===
+    metadata_rows.append(['CALCULATION PARAMETERS', ''])
+    metadata_rows.append(['Period Type', calc_options.get('period_type', 'Weekly')])
+    metadata_rows.append(['Track Backlog', 'Yes' if calc_options.get('track_backlog', True) else 'No'])
+    metadata_rows.append(['Exclude Missing Dates', 'Yes' if calc_options.get('exclude_missing_dates', True) else 'No'])
+    metadata_rows.append(['', ''])
+    
+    # === DATA FILTERS ===
+    metadata_rows.append(['DATA FILTERS', ''])
+    
+    if filter_values.get('entity'):
+        entity_mode = "Excluded" if filter_values.get('exclude_entity', False) else "Included"
+        metadata_rows.append(['Legal Entity', f"{entity_mode}: {', '.join(filter_values['entity'])}"])
+    else:
+        metadata_rows.append(['Legal Entity', 'All'])
+    
+    if filter_values.get('brand'):
+        brand_mode = "Excluded" if filter_values.get('exclude_brand', False) else "Included"
+        metadata_rows.append(['Brand', f"{brand_mode}: {', '.join(filter_values['brand'])}"])
+    else:
+        metadata_rows.append(['Brand', 'All'])
+    
+    if filter_values.get('product'):
+        product_mode = "Excluded" if filter_values.get('exclude_product', False) else "Included"
+        metadata_rows.append(['Products', f"{product_mode}: {len(filter_values['product'])} products"])
+    else:
+        metadata_rows.append(['Products', 'All'])
+    
+    if filter_values.get('start_date') and filter_values.get('end_date'):
+        metadata_rows.append(['Date Range', f"{filter_values['start_date']} to {filter_values['end_date']}"])
+    
+    metadata_rows.append(['', ''])
+    
+    # === DISPLAY FILTERS ===
+    metadata_rows.append(['DISPLAY FILTERS', ''])
+    metadata_rows.append(['Period Filter', display_filters.get('period_filter', 'All')])
+    
+    product_types = []
+    if display_filters.get('show_matched', True):
+        product_types.append('Matched')
+    if display_filters.get('show_demand_only', True):
+        product_types.append('Demand Only')
+    if display_filters.get('show_supply_only', True):
+        product_types.append('Supply Only')
+    metadata_rows.append(['Product Types', ', '.join(product_types)])
+    metadata_rows.append(['', ''])
+    
+    # === SUMMARY STATISTICS ===
+    metadata_rows.append(['SUMMARY STATISTICS', ''])
+    
+    if not gap_df.empty:
+        total_products = gap_df['pt_code'].nunique()
+        total_periods = gap_df['period'].nunique()
+        
+        metadata_rows.append(['Total Products', total_products])
+        metadata_rows.append(['Total Periods', total_periods])
+        metadata_rows.append(['Total Records', len(gap_df)])
+        metadata_rows.append(['', ''])
+        
+        # Shortage & Surplus categorization
+        categorization = categorize_products(gap_df)
+        
+        metadata_rows.append(['CATEGORIZATION', ''])
+        metadata_rows.append(['Net Shortage Products', len(categorization['net_shortage'])]),
+        metadata_rows.append(['Balanced Products', len(categorization['balanced'])]),
+        metadata_rows.append(['Net Surplus Products', len(categorization['net_surplus'])]),
+        metadata_rows.append(['', ''])
+        metadata_rows.append(['TIMING FLAGS', ''])
+        metadata_rows.append(['Timing Shortage Products', len(categorization['timing_shortage'])]),
+        metadata_rows.append(['Timing Surplus Products', len(categorization['timing_surplus'])]),
+        metadata_rows.append(['', ''])
+        
+        # Supply vs Demand totals
+        total_demand = gap_df['total_demand_qty'].sum()
+        total_supply = gap_df['supply_in_period'].sum()
+        net_position = total_supply - total_demand
+        
+        metadata_rows.append(['SUPPLY vs DEMAND', ''])
+        metadata_rows.append(['Total Demand', f"{total_demand:,.2f}"])
+        metadata_rows.append(['Total Supply', f"{total_supply:,.2f}"])
+        metadata_rows.append(['Net Position', f"{net_position:,.2f}"])
+        
+        if total_demand > 0:
+            fill_rate = min(100, total_supply / total_demand * 100)
+            metadata_rows.append(['Overall Fill Rate', f"{fill_rate:.1f}%"])
+        
+        metadata_rows.append(['', ''])
+        
+        # Shortage/Surplus quantities
+        total_shortage = abs(gap_df[gap_df['gap_quantity'] < 0]['gap_quantity'].sum())
+        total_surplus = gap_df[gap_df['gap_quantity'] > 0]['gap_quantity'].sum()
+        
+        metadata_rows.append(['Total Shortage Quantity', f"{total_shortage:,.2f}"])
+        metadata_rows.append(['Total Surplus Quantity', f"{total_surplus:,.2f}"])
+        
+        # Backlog info if tracking
+        if calc_options.get('track_backlog', True) and 'backlog_to_next' in gap_df.columns:
+            final_backlog = gap_df.groupby('pt_code')['backlog_to_next'].last().sum()
+            products_with_backlog = (gap_df.groupby('pt_code')['backlog_to_next'].last() > 0).sum()
+            
+            metadata_rows.append(['', ''])
+            metadata_rows.append(['Final Backlog', f"{final_backlog:,.2f}"])
+            metadata_rows.append(['Products with Backlog', products_with_backlog])
+    
+    metadata_rows.append(['', ''])
+    
+    # === SOURCE DATA COUNTS ===
+    metadata_rows.append(['SOURCE DATA COUNTS', ''])
+    metadata_rows.append(['Demand Records', len(df_demand_filtered)])
+    metadata_rows.append(['Supply Records', len(df_supply_filtered)])
+    
+    # Convert to DataFrame
+    metadata_df = pd.DataFrame(metadata_rows, columns=['Parameter', 'Value'])
+    
+    return metadata_df
+
+
+def export_gap_with_metadata(
+    gap_df: pd.DataFrame,
+    filter_values: Dict[str, Any],
+    display_filters: Dict[str, Any],
+    calc_options: Dict[str, Any],
+    df_demand_filtered: pd.DataFrame,
+    df_supply_filtered: pd.DataFrame
+) -> bytes:
+    """
+    Export GAP analysis with metadata sheet and enhanced period formatting
+    
+    Args:
+        gap_df: GAP analysis results
+        filter_values: Data filters applied
+        display_filters: Display filters applied
+        calc_options: Calculation options
+        df_demand_filtered: Filtered demand data
+        df_supply_filtered: Filtered supply data
+    
+    Returns:
+        Excel file bytes with multiple sheets
+    """
+    from .period_helpers import format_period_with_dates
+    
+    if gap_df.empty:
+        logger.warning("Empty GAP dataframe for export")
+        return BytesIO().getvalue()
+    
+    # Prepare GAP data for export with enhanced period formatting
+    export_df = gap_df.copy()
+    
+    # Format period column with date ranges
+    period_type = calc_options.get('period_type', 'Weekly')
+    if 'period' in export_df.columns:
+        export_df['period'] = export_df['period'].apply(
+            lambda x: format_period_with_dates(x, period_type)
+        )
+    
+    # Create metadata sheet
+    metadata_df = create_metadata_sheet(
+        filter_values=filter_values,
+        calc_options=calc_options,
+        gap_df=gap_df,
+        display_filters=display_filters,
+        df_demand_filtered=df_demand_filtered,
+        df_supply_filtered=df_supply_filtered
+    )
+    
+    # Create product summary sheet
+    summary_df = create_product_summary(gap_df, calc_options)
+    
+    # Prepare sheets dictionary
+    sheets_dict = {
+        'Export_Info': metadata_df,
+        'GAP_Analysis': export_df,
+        'Product_Summary': summary_df
+    }
+    
+    # Export to Excel
+    return export_multiple_sheets(sheets_dict)
+
+
+def create_product_summary(gap_df: pd.DataFrame, calc_options: Dict[str, Any]) -> pd.DataFrame:
+    """
+    Create product-level summary for export
+    
+    Args:
+        gap_df: GAP analysis dataframe
+        calc_options: Calculation options
+    
+    Returns:
+        Product summary dataframe
+    """
+    from .shortage_analyzer import categorize_products
+    
+    if gap_df.empty:
+        return pd.DataFrame()
+    
+    # Get categorization
+    categorization = categorize_products(gap_df)
+    
+    summary_data = []
+    
+    for pt_code in gap_df['pt_code'].unique():
+        product_df = gap_df[gap_df['pt_code'] == pt_code]
+        
+        # Basic info
+        product_name = product_df['product_name'].iloc[0] if 'product_name' in product_df.columns else ''
+        brand = product_df['brand'].iloc[0] if 'brand' in product_df.columns else ''
+        package_size = product_df['package_size'].iloc[0] if 'package_size' in product_df.columns else ''
+        standard_uom = product_df['standard_uom'].iloc[0] if 'standard_uom' in product_df.columns else ''
+        
+        # Totals
+        total_demand = product_df['total_demand_qty'].sum()
+        total_supply = product_df['supply_in_period'].sum()
+        net_position = total_supply - total_demand
+        
+        # Period counts
+        total_periods = len(product_df)
+        shortage_periods = (product_df['gap_quantity'] < 0).sum()
+        surplus_periods = (product_df['gap_quantity'] > 0).sum()
+        balanced_periods = total_periods - shortage_periods - surplus_periods
+        
+        # Max shortage/surplus
+        max_shortage = abs(product_df[product_df['gap_quantity'] < 0]['gap_quantity'].min()) if shortage_periods > 0 else 0
+        max_surplus = product_df[product_df['gap_quantity'] > 0]['gap_quantity'].max() if surplus_periods > 0 else 0
+        
+        # Main categorization (mutually exclusive)
+        if pt_code in categorization['net_shortage']:
+            category = "Net Shortage"
+        elif pt_code in categorization['net_surplus']:
+            category = "Net Surplus"
+        elif pt_code in categorization['balanced']:
+            category = "Balanced"
+        else:
+            category = "Unknown"
+        
+        # Timing flags
+        timing_flags = []
+        if pt_code in categorization['timing_shortage']:
+            timing_flags.append("Timing Shortage")
+        if pt_code in categorization['timing_surplus']:
+            timing_flags.append("Timing Surplus")
+        timing_flag_str = " | ".join(timing_flags) if timing_flags else "None"
+        
+        # Fill rate
+        fill_rate = min(100, (total_supply / total_demand * 100)) if total_demand > 0 else 100
+        
+        # Backlog info if tracking
+        if calc_options.get('track_backlog', True) and 'backlog_to_next' in product_df.columns:
+            final_backlog = product_df['backlog_to_next'].iloc[-1] if not product_df.empty else 0
+        else:
+            final_backlog = 0
+        
+        summary_data.append({
+            'PT Code': pt_code,
+            'Product Name': product_name,
+            'Brand': brand,
+            'Package Size': package_size,
+            'UOM': standard_uom,
+            'Category': category,
+            'Timing Flags': timing_flag_str,
+            'Total Demand': total_demand,
+            'Total Supply': total_supply,
+            'Net Position': net_position,
+            'Fill Rate %': fill_rate,
+            'Total Periods': total_periods,
+            'Shortage Periods': shortage_periods,
+            'Surplus Periods': surplus_periods,
+            'Balanced Periods': balanced_periods,
+            'Max Shortage': max_shortage,
+            'Max Surplus': max_surplus,
+            'Final Backlog': final_backlog
+        })
+    
+    summary_df = pd.DataFrame(summary_data)
+    
+    # Sort by category priority and net position
+    category_order = {
+        'Net Shortage': 1,
+        'Balanced': 2,
+        'Net Surplus': 3,
+        'Unknown': 4
+    }
+    
+    if not summary_df.empty:
+        summary_df['_sort_order'] = summary_df['Category'].map(category_order)
+        summary_df = summary_df.sort_values(['_sort_order', 'Net Position'])
+        summary_df = summary_df.drop(columns=['_sort_order'])
+    
+    return summary_df
 
 
 # === SESSION STATE HELPERS ===

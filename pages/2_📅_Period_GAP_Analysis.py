@@ -1,10 +1,12 @@
 # pages/2_📅_Period_GAP_Analysis.py
 """
-Period-based Supply-Demand GAP Analysis - Version 3.4
+Period-based Supply-Demand GAP Analysis - Version 3.5
 - Analyzes supply-demand gaps by time periods with carry-forward logic
 - Enhanced with ETD/ETA selection for OC analysis
 - Default to ETA for OC timing analysis
 - Quick Add: Bulk PT code import feature for efficient product selection
+- Enhanced Export: Metadata sheet and improved period formatting
+- New Filters: Net Surplus and Timing Surplus categories
 """
 
 import streamlit as st
@@ -34,7 +36,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from utils.auth import AuthManager
 
 # Constants
-VERSION = "3.4"  # Added Quick Add feature
+VERSION = "3.5"  # Enhanced export with metadata and surplus filters
 MAX_EXPORT_ROWS = 50000
 DATA_LOAD_WARNING_SECONDS = 5
 DEFAULT_PERIOD_TYPE = "Weekly"
@@ -170,31 +172,31 @@ def initialize_filter_data(_data_loader) -> Dict[str, Any]:
         # Create formatted product options list
         product_options = []
         for pt_code, (name, package, brand) in sorted(products.items()):
-            # Format: PT_CODE | Name | Package (Brand)
-            if package and brand:
-                option = f"{pt_code} | {name} | {package} ({brand})"
-            elif package:
-                option = f"{pt_code} | {name} | {package}"
-            elif brand:
-                option = f"{pt_code} | {name} ({brand})"
-            else:
-                option = f"{pt_code} | {name}" if name else pt_code
+            # Format: "PT_CODE | Product Name | Package | Brand"
+            parts = [pt_code]
+            if name:
+                parts.append(name)
+            if package:
+                parts.append(package)
+            if brand:
+                parts.append(brand)
             
-            product_options.append(option)
+            formatted_option = " | ".join(parts)
+            product_options.append(formatted_option)
         
         return {
             'entities': sorted(list(entities)),
             'products': sorted(list(products.keys())),
-            'product_options': sorted(product_options),
+            'product_options': product_options,
             'brands': sorted(list(brands)),
             'min_date': min_date,
             'max_date': max_date,
             'demand_df': demand_df,
             'supply_df': supply_df
         }
+        
     except Exception as e:
         logger.error(f"Error initializing filter data: {e}")
-        # Return empty defaults with today's date
         today = datetime.today().date()
         return {
             'entities': [],
@@ -562,8 +564,7 @@ def apply_filters_to_data(
         # Remove temporary column
         filtered_demand = filtered_demand.drop(columns=['_brand_clean'])
     
-    # Apply date filter for demand - use selected date field (ETD or ETA)
-    # The data should have a unified 'demand_date' field set by data loader
+    # Apply date filters to demand - now use unified demand_date field
     if 'demand_date' in filtered_demand.columns and filters.get('start_date') and filters.get('end_date'):
         start_date = pd.to_datetime(filters['start_date'])
         end_date = pd.to_datetime(filters['end_date'])
@@ -576,7 +577,7 @@ def apply_filters_to_data(
         )
         filtered_demand = filtered_demand[date_mask]
     
-    # Apply filters to SUPPLY with exclude logic
+    # Apply filters to SUPPLY with same exclude logic
     
     # Legal Entity filter
     if filters.get('entity'):
@@ -646,7 +647,7 @@ def apply_filters_to_data(
 
 
 def render_display_filters(calc_options: Dict[str, Any]) -> Dict[str, Any]:
-    """Render display filters for GAP results with improved shortage categorization"""
+    """Render display filters for GAP results with improved shortage and surplus categorization"""
     st.markdown("### 🔍 Display Filters")
     st.caption("Filter the calculated results. Changes apply immediately.")
     
@@ -681,16 +682,19 @@ def render_display_filters(calc_options: Dict[str, Any]) -> Dict[str, Any]:
     # Add help text explaining the difference
     with st.expander("ℹ️ Filter Definitions", expanded=False):
         st.markdown("""
+        **Main Categories (Mutually Exclusive):**
         - **All**: Show all products and periods
-        - **Net Shortage**: Products where total supply < total demand (need new orders)
-        - **Timing Gap**: Products with sufficient supply but timing mismatches (need expedite/reschedule)
-        - **Past Periods Only**: Show only periods that have already occurred
-        - **Future Periods Only**: Show only upcoming periods
+        - **Net Shortage**: Total supply < total demand (need new orders)
+        - **Net Surplus**: Total supply > total demand (excess inventory)
+        
+        **Timing Filters (Cross-cutting):**
+        - **Timing Shortage**: Products with shortage periods (need expedite/reschedule)
+        - **Timing Surplus**: Products with surplus periods (optimize schedule)
         """)
     
     period_filter = st.radio(
         "Show:",
-        options=["All", "Net Shortage", "Timing Gap", "Past Periods Only", "Future Periods Only"],
+        options=["All", "Net Shortage", "Timing Shortage", "Net Surplus", "Timing Surplus"],
         horizontal=True,
         key="pgap_period_filter"
     )
@@ -700,8 +704,16 @@ def render_display_filters(calc_options: Dict[str, Any]) -> Dict[str, Any]:
     with col4:
         enable_row_highlighting = st.checkbox(
             "🎨 Enable Row Highlighting",
+            value=True,
+            key="pgap_enable_highlighting"
+        )
+    
+    with col5:
+        show_only_nonzero = st.checkbox(
+            "🚫 Hide Balanced Products",
             value=False,
-            key="pgap_row_highlighting"
+            key="pgap_show_nonzero",
+            help="Hide products with GAP = 0 (only show shortage/surplus)"
         )
     
     return {
@@ -710,6 +722,7 @@ def render_display_filters(calc_options: Dict[str, Any]) -> Dict[str, Any]:
         "show_supply_only": show_supply_only,
         "period_filter": period_filter,
         "enable_row_highlighting": enable_row_highlighting,
+        "show_only_nonzero": show_only_nonzero,
         "period_type": calc_options["period_type"],
         "track_backlog": calc_options["track_backlog"]
     }
@@ -722,9 +735,9 @@ def apply_display_filters(
     df_supply_filtered: pd.DataFrame,
     stored_calc_options: Dict[str, Any]
 ) -> pd.DataFrame:
-    """Apply display filters to GAP results with improved shortage categorization"""
-    from utils.period_gap.period_helpers import is_past_period, parse_week_period, parse_month_period
-    from utils.period_gap.shortage_analyzer import categorize_shortage_type
+    """Apply display filters to GAP results with new categorization logic"""
+    from utils.period_gap.period_helpers import parse_week_period, parse_month_period
+    from utils.period_gap.shortage_analyzer import categorize_main_category, categorize_timing_issues
     
     gap_df_filtered = gap_df.copy()
     
@@ -744,29 +757,30 @@ def apply_display_filters(
         if products_to_show:
             gap_df_filtered = gap_df_filtered[gap_df_filtered['pt_code'].isin(products_to_show)]
     
-    # Filter by period/status - UPDATED LOGIC
+    # Filter by period/status - NEW LOGIC with mutually exclusive main categories
     period_filter = display_filters['period_filter']
     period_type = stored_calc_options['period_type']
     
-    if period_filter == "Net Shortage":
-        # Products with net shortage (total supply < total demand)
-        # Check final period or overall balance
-        products_with_net_shortage = categorize_shortage_type(gap_df_filtered)['net_shortage']
-        gap_df_filtered = gap_df_filtered[gap_df_filtered['pt_code'].isin(products_with_net_shortage)]
+    if period_filter != "All":
+        # Get categorizations
+        main_cats = categorize_main_category(gap_df_filtered)
+        timing_cats = categorize_timing_issues(gap_df_filtered)
         
-    elif period_filter == "Timing Gap":
-        # Products with timing gap (sufficient supply but timing mismatch)
-        products_with_timing_gap = categorize_shortage_type(gap_df_filtered)['timing_gap']
-        gap_df_filtered = gap_df_filtered[gap_df_filtered['pt_code'].isin(products_with_timing_gap)]
+        if period_filter == "Net Shortage":
+            # Main category: Products with net shortage
+            gap_df_filtered = gap_df_filtered[gap_df_filtered['pt_code'].isin(main_cats['net_shortage'])]
+            
+        elif period_filter == "Timing Shortage":
+            # Cross-cutting: Products with shortage periods (any main category)
+            gap_df_filtered = gap_df_filtered[gap_df_filtered['pt_code'].isin(timing_cats['timing_shortage'])]
         
-    elif period_filter == "Past Periods Only":
-        gap_df_filtered = gap_df_filtered[
-            gap_df_filtered['period'].apply(lambda x: is_past_period(str(x), period_type))
-        ]
-    elif period_filter == "Future Periods Only":
-        gap_df_filtered = gap_df_filtered[
-            ~gap_df_filtered['period'].apply(lambda x: is_past_period(str(x), period_type))
-        ]
+        elif period_filter == "Net Surplus":
+            # Main category: Products with net surplus
+            gap_df_filtered = gap_df_filtered[gap_df_filtered['pt_code'].isin(main_cats['net_surplus'])]
+        
+        elif period_filter == "Timing Surplus":
+            # Cross-cutting: Products with surplus periods (any main category)
+            gap_df_filtered = gap_df_filtered[gap_df_filtered['pt_code'].isin(timing_cats['timing_surplus'])]
     
     # RE-SORT after filtering to ensure proper order
     if not gap_df_filtered.empty:
@@ -787,10 +801,38 @@ def apply_display_filters(
     return gap_df_filtered
 
 
-def export_to_excel(gap_df: pd.DataFrame, filter_values: Dict[str, Any], include_safety: bool = False) -> bytes:
-    """Export GAP analysis to Excel"""
-    from utils.period_gap.helpers import convert_df_to_excel
-    return convert_df_to_excel(gap_df, "GAP_Analysis")
+def export_to_excel(
+    gap_df: pd.DataFrame, 
+    filter_values: Dict[str, Any],
+    display_filters: Dict[str, Any],
+    calc_options: Dict[str, Any],
+    df_demand_filtered: pd.DataFrame,
+    df_supply_filtered: pd.DataFrame
+) -> bytes:
+    """
+    Enhanced export with metadata sheet and improved period formatting
+    
+    Args:
+        gap_df: GAP analysis dataframe to export
+        filter_values: Data filters that were applied
+        display_filters: Display filters that were applied
+        calc_options: Calculation options used
+        df_demand_filtered: Filtered demand data
+        df_supply_filtered: Filtered supply data
+    
+    Returns:
+        Excel file bytes with metadata and formatted data
+    """
+    from utils.period_gap.helpers import export_gap_with_metadata
+    
+    return export_gap_with_metadata(
+        gap_df=gap_df,
+        filter_values=filter_values,
+        display_filters=display_filters,
+        calc_options=calc_options,
+        df_demand_filtered=df_demand_filtered,
+        df_supply_filtered=df_supply_filtered
+    )
 
 
 def main():
@@ -851,42 +893,47 @@ def main():
                 products=filter_data['products'],
                 brands=filter_data['brands']
             )
-            
-            # Store in session state for immediate access
-            st.session_state['pgap_filter_data'] = filter_data
-            st.session_state['pgap_temp_demand'] = filter_data['demand_df']
-            st.session_state['pgap_temp_supply'] = filter_data['supply_df']
         
-        # Render source selection
+        # Source Selection
         selected_sources = render_source_selection(filter_data)
         
-        # Render filters
+        # Show warning if no sources selected
+        if not selected_sources['demand'] or not selected_sources['supply']:
+            st.warning("⚠️ Please select at least one demand source and one supply source.")
+            return
+        
+        # Filters
         filters = render_filters(filter_data)
         
-        # Render calculation options
+        # Calculation Options
         calc_options = render_calculation_options()
         
-        # Run Analysis Button
-        if st.button("🚀 Run Period GAP Analysis", type="primary", use_container_width=True):
-            
-            if not selected_sources["demand"] or not selected_sources["supply"]:
-                st.error("Please select at least one demand source and one supply source.")
-            else:
-                # Load data with OC date field selection
-                with st.spinner("Loading demand data..."):
-                    df_demand_all = data_loader.get_demand_data(
-                        selected_sources["demand"],
-                        selected_sources["include_converted"],
-                        oc_date_field=selected_sources.get("oc_date_field", "ETA")  # Pass the selected field
-                    )
+        # Calculate button
+        st.markdown("---")
+        col_btn1, col_btn2, col_btn3 = st.columns([2, 1, 2])
+        with col_btn2:
+            calculate_button = st.button(
+                "🔄 Calculate GAP",
+                type="primary",
+                use_container_width=True
+            )
+        
+        # Load and process data when button clicked
+        if calculate_button:
+            with st.spinner("Loading data..."):
+                # Load filtered data based on selections
+                df_demand_all = data_loader.get_demand_data(
+                    sources=selected_sources['demand'],
+                    include_converted=selected_sources['include_converted'],
+                    oc_date_field=selected_sources.get("oc_date_field", "ETA")
+                )
                 
-                with st.spinner("Loading supply data..."):
-                    df_supply_all = data_loader.get_supply_data(
-                        selected_sources["supply"],
-                        selected_sources["exclude_expired"]
-                    )
+                df_supply_all = data_loader.get_supply_data(
+                    sources=selected_sources['supply'],
+                    exclude_expired=selected_sources['exclude_expired']
+                )
                 
-                # Apply filters with exclude logic and OC date field
+                # Apply data filters
                 df_demand_filtered, df_supply_filtered = apply_filters_to_data(
                     df_demand_all,
                     df_supply_all,
@@ -1001,50 +1048,89 @@ def main():
                     
                     show_gap_pivot_view(gap_df_filtered, display_filters)
                     
-                    # Export section
+                    # Export section - ENHANCED with dynamic buttons
                     st.markdown("---")
                     st.markdown("### 📤 Export Options")
                     
+                    # Define export configurations based on filter type
+                    export_configs = {
+                        "All": {
+                            "label": "📊 Export Full Report",
+                            "prefix": "full_report",
+                            "description": "Export all data with metadata"
+                        },
+                        "Net Shortage": {
+                            "label": "📦 Export Net Shortage",
+                            "prefix": "net_shortage",
+                            "description": "Products needing new orders"
+                        },
+                        "Timing Shortage": {
+                            "label": "⏱️ Export Timing Shortage",
+                            "prefix": "timing_shortage",
+                            "description": "Products with shortage periods (expedite/reschedule)"
+                        },
+                        "Net Surplus": {
+                            "label": "📈 Export Net Surplus",
+                            "prefix": "net_surplus",
+                            "description": "Products with excess inventory"
+                        },
+                        "Timing Surplus": {
+                            "label": "⏰ Export Timing Surplus",
+                            "prefix": "timing_surplus",
+                            "description": "Products with surplus periods"
+                        }
+                    }
+                    
+                    # Get current filter selection
+                    current_filter = display_filters.get('period_filter', 'All')
+                    
+                    # Create export buttons
                     col1, col2, col3 = st.columns(3)
                     
                     with col1:
-                        excel_data = export_to_excel(gap_df_filtered, filters, False)
+                        # Always show full report export
+                        excel_data = export_to_excel(
+                            gap_df_filtered,
+                            filters,
+                            display_filters,
+                            stored_calc_options,
+                            df_demand_filtered,
+                            df_supply_filtered
+                        )
                         st.download_button(
-                            "📊 Export GAP Details",
+                            export_configs["All"]["label"],
                             data=excel_data,
-                            file_name=f"period_gap_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            file_name=f"{export_configs['All']['prefix']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            help=export_configs["All"]["description"]
                         )
                     
                     with col2:
-                        # Export based on selected filter
-                        if display_filters['period_filter'] == "Net Shortage":
-                            export_label = "📦 Export Net Shortage"
-                            export_prefix = "net_shortage"
-                        elif display_filters['period_filter'] == "Timing Gap":
-                            export_label = "⏱️ Export Timing Gaps"  
-                            export_prefix = "timing_gap"
-                        elif (gap_df_filtered["gap_quantity"] < 0).any():
-                            export_label = "🚨 Export Shortage Only"
-                            export_prefix = "shortage_report"
-                        else:
-                            export_label = None
-                        
-                        if export_label:
-                            if display_filters['period_filter'] in ["Net Shortage", "Timing Gap"]:
-                                # Already filtered
-                                shortage_excel = export_to_excel(gap_df_filtered, filters, False)
-                            else:
-                                # Filter for shortage only
-                                shortage_df = gap_df_filtered[gap_df_filtered["gap_quantity"] < 0]
-                                shortage_excel = export_to_excel(shortage_df, filters, False)
+                        # Show filtered export if not "All"
+                        if current_filter != "All" and current_filter in export_configs:
+                            config = export_configs[current_filter]
+                            
+                            # Data is already filtered
+                            filtered_excel = export_to_excel(
+                                gap_df_filtered,
+                                filters,
+                                display_filters,
+                                stored_calc_options,
+                                df_demand_filtered,
+                                df_supply_filtered
+                            )
                             
                             st.download_button(
-                                export_label,
-                                data=shortage_excel,
-                                file_name=f"{export_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                config["label"],
+                                data=filtered_excel,
+                                file_name=f"{config['prefix']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                help=config["description"]
                             )
+                    
+                    # Show info about export format
+                    st.info("📋 **Export includes:** Export_Info (metadata) | GAP_Analysis (detailed data) | Product_Summary (overview)")
+                    
             else:
                 st.warning("No data available for the selected filters and sources.")
     
