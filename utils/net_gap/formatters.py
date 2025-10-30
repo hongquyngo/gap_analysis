@@ -19,6 +19,7 @@ ZERO_DEFAULT_FIELDS = [
 class GAPFormatter:
     """Handles all formatting for display and export with logical no-demand handling"""
     
+    # formatters.py
     @staticmethod
     def format_number(
         value: Any,
@@ -37,9 +38,10 @@ class GAPFormatter:
             return "N/A"
         
         try:
-            # Format number
+            # Format number with proper rounding
             if decimals == 0:
-                formatted = f"{int(value):,}"
+                # ✅ Use round() instead of int() to properly round
+                formatted = f"{round(value):,}"
             else:
                 formatted = f"{value:,.{decimals}f}"
             
@@ -51,7 +53,8 @@ class GAPFormatter:
             
         except (ValueError, TypeError):
             return str(value)
-    
+
+
     @staticmethod
     def format_currency(
         value: Any,
