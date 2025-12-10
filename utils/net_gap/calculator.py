@@ -1,12 +1,11 @@
-# utils/net_gap/calculator.py - FINAL FIXED VERSION v4.3.0
+# utils/net_gap/calculator.py - IMPROVED VERSION v4.4.0
 
 """
 GAP Calculator - Production Ready Complete Version
-- Fixed avg_selling_price_usd calculation (use total_value_usd not selling_unit_price)  
-- Fixed duplicate products issue (group by product_id only)
-- Fixed THRESHOLDS key names
-- Includes expired inventory feature
-- Contains ALL required methods
+IMPROVEMENTS in v4.4:
+- Added safety_gap column (Supply - Safety Stock, can be negative)
+- Added shortage_cause column (explains WHY shortage exists)
+- Better insights for users
 """
 
 import pandas as pd
@@ -22,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 class GAPCalculator:
-    """GAP calculation engine - complete with all fixes"""
+    """GAP calculation engine - complete with all fixes and improvements"""
     
     def calculate_net_gap(
         self,
@@ -346,7 +345,10 @@ class GAPCalculator:
         return gap_df
     
     def _calculate_metrics(self, gap_df: pd.DataFrame, include_safety: bool) -> pd.DataFrame:
-        """Calculate GAP metrics with improved no-demand handling"""
+        """
+        Calculate GAP metrics with improved no-demand handling
+        UPDATED v4.4: Added safety_gap and shortage_cause columns
+        """
         
         # Ensure required columns exist (defensive programming)
         if 'total_supply' not in gap_df.columns:
@@ -371,6 +373,13 @@ class GAPCalculator:
         
         # True GAP (always ignores safety stock)
         gap_df['true_gap'] = gap_df['total_supply'] - gap_df['total_demand']
+        
+        # NEW v4.4: Safety Gap = Total Supply - Safety Stock (can be negative)
+        # This shows if supply is above or below safety requirement
+        if include_safety and 'safety_stock_qty' in gap_df.columns:
+            gap_df['safety_gap'] = gap_df['total_supply'] - gap_df['safety_stock_qty']
+        else:
+            gap_df['safety_gap'] = np.nan
         
         # Coverage ratio - Use NaN for no-demand (from stable version)
         gap_df['coverage_ratio'] = np.where(
@@ -402,6 +411,12 @@ class GAPCalculator:
         gap_df['gap_status'] = gap_df.apply(self._classify_status, axis=1)
         gap_df['priority'] = gap_df.apply(self._get_priority, axis=1)
         gap_df['suggested_action'] = gap_df.apply(self._get_action, axis=1)
+        
+        # NEW v4.4: Shortage Cause - explains WHY there's a shortage
+        gap_df['shortage_cause'] = gap_df.apply(
+            lambda row: self._classify_shortage_cause(row, include_safety), 
+            axis=1
+        )
         
         # Financial metrics - ensure cost/price columns exist
         if 'avg_unit_cost_usd' not in gap_df.columns:
@@ -515,6 +530,43 @@ class GAPCalculator:
         }
         
         return actions.get(status, "Review manually")
+    
+    def _classify_shortage_cause(self, row: pd.Series, include_safety: bool) -> str:
+        """
+        NEW v4.4: Classify the cause of shortage for better user understanding
+        
+        Returns:
+            str: Descriptive string explaining WHY there's a shortage
+        """
+        net_gap = row.get('net_gap', 0)
+        true_gap = row.get('true_gap', 0)
+        total_supply = row.get('total_supply', 0)
+        total_demand = row.get('total_demand', 0)
+        safety_stock = row.get('safety_stock_qty', 0) if include_safety else 0
+        
+        # No demand case
+        if total_demand == 0:
+            if total_supply > 0:
+                return "⚪ No Demand"
+            return "⚪ Inactive"
+        
+        # No shortage
+        if net_gap >= 0:
+            return "✅ OK"
+        
+        # Has shortage - determine cause
+        if true_gap < 0:
+            # Real shortage - not enough supply even without safety
+            if include_safety and safety_stock > 0 and total_supply < safety_stock:
+                return "🚨 Real + Below Safety"
+            return "🚨 Real Shortage"
+        elif true_gap >= 0 and net_gap < 0:
+            # Safety-induced shortage
+            if include_safety and total_supply < safety_stock:
+                return "🔒 Supply < Safety Req."
+            return "🔒 Safety Requirement"
+        
+        return "⚠️ Review"
     
     def _calculate_summary_metrics(
         self,
