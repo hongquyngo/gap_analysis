@@ -1,12 +1,11 @@
-# utils/net_gap/components.py - IMPROVED VERSION v4.4
+# utils/net_gap/components.py - VERSION 4.5
 
 """
-UI Components for GAP Analysis - Enhanced Version
-IMPROVEMENTS in v4.4:
-- Added Safety Gap column display
-- Added Shortage Cause column display  
-- Improved Formula Guide with accurate formulas
-- Better column organization and visual indicators
+UI Components for GAP Analysis - VERSION 4.5
+Synchronized with new status classification logic:
+- net_gap < 0 → SHORTAGE (with severity levels)
+- net_gap = 0 → BALANCED
+- net_gap > 0 → SURPLUS (with severity levels)
 """
 
 import streamlit as st
@@ -15,25 +14,47 @@ import numpy as np
 from typing import Dict, Any, Optional, List
 import logging
 
-from .constants import STATUS_ICONS, FIELD_TOOLTIPS, UI_CONFIG
+from .constants import STATUS_ICONS, FIELD_TOOLTIPS, UI_CONFIG, STATUS_CONFIG, GAP_CATEGORIES
 from .formatters import GAPFormatter
 
 logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# IMPROVED: Formula Guide with Accurate Formulas
+# STATUS ICONS MAPPING - v4.5 (Option A - Net GAP sign primary)
 # =============================================================================
+STATUS_ICONS_V45 = {
+    # Shortage statuses (net_gap < 0)
+    'CRITICAL_SHORTAGE': '🚨',
+    'SEVERE_SHORTAGE': '🔴',
+    'HIGH_SHORTAGE': '🟠',
+    'MODERATE_SHORTAGE': '🟡',
+    'LIGHT_SHORTAGE': '⚠️',
+    
+    # Balanced (net_gap = 0)
+    'BALANCED': '✅',
+    
+    # Surplus statuses (net_gap > 0)
+    'LIGHT_SURPLUS': '🔵',
+    'MODERATE_SURPLUS': '🟣',
+    'HIGH_SURPLUS': '🟠',
+    'SEVERE_SURPLUS': '🔴',
+    
+    # Inactive
+    'NO_DEMAND': '⚪',
+    'NO_ACTIVITY': '⚪'
+}
 
+
+# =============================================================================
+# FORMULA GUIDE - Complete version
+# =============================================================================
 def render_formula_guide():
-    """
-    Render expandable formula explanation guide
-    FIXED v4.4: Accurate formulas matching actual code logic
-    """
+    """Render expandable formula explanation guide - Complete version"""
     
     with st.expander("📊 **GAP Calculation Guide** - Click to understand the formulas", expanded=False):
         
-        # Main formulas
+        # ===== ROW 1: Core Formulas + Status Logic =====
         col1, col2 = st.columns([1, 1])
         
         with col1:
@@ -56,10 +77,40 @@ def render_formula_guide():
             - Shows actual supply vs demand difference
             
             **Coverage Ratio** = (Available Supply ÷ Demand) × 100%
-            - >100% means surplus, <100% means shortage
+            - 100% means surplus, <100% means shortage
             """)
         
         with col2:
+            st.markdown("""
+            ### v4.5 Status Logic
+            
+            **Primary rule: Net GAP sign determines group**
+            """)
+            
+            status_logic = pd.DataFrame([
+                {'Net GAP': '< 0', 'Group': '🔴 SHORTAGE (always!)'},
+                {'Net GAP': '= 0', 'Group': '✅ BALANCED'},
+                {'Net GAP': '> 0', 'Group': '📦 SURPLUS (always!)'}
+            ])
+            st.dataframe(status_logic, use_container_width=True, hide_index=True)
+            
+            st.markdown("""
+            **Secondary: Coverage determines severity**
+            
+            Within SHORTAGE group:
+            - Coverage < 25% → 🚨 Critical
+            - Coverage < 50% → 🔴 Severe
+            - Coverage < 75% → 🟠 High
+            - Coverage < 90% → 🟡 Moderate
+            - Coverage < 100% → ⚠️ Light
+            """)
+        
+        st.markdown("---")
+        
+        # ===== ROW 2: Financial Calculations + Shortage Causes =====
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
             st.markdown("""
             ### Financial Calculations
             
@@ -73,18 +124,30 @@ def render_formula_guide():
             **Safety Stock Impact** = Net GAP - True GAP
             - Shows how safety stock affects the gap
             - Negative means safety stock creates shortage
-            
-            ### Shortage Causes
-            
-            | Icon | Cause |
-            |------|-------|
-            | ✅ | OK - No shortage |
-            | 🔒 | Safety stock requirement |
-            | 🚨 | Real shortage |
             """)
         
-        # Example scenarios - FIXED with accurate calculations
+        with col2:
+            st.markdown("### Shortage Causes")
+            
+            causes_data = pd.DataFrame([
+                {'Icon': '✅', 'Cause': 'OK - No shortage'},
+                {'Icon': '🔒', 'Cause': 'Safety stock requirement'},
+                {'Icon': '🚨', 'Cause': 'Real shortage'}
+            ])
+            st.dataframe(causes_data, use_container_width=True, hide_index=True)
+            
+            st.markdown("""
+            **How to interpret:**
+            - **OK**: Net GAP ≥ 0, no action needed
+            - **Safety Requirement**: True GAP ≥ 0 but Net GAP < 0  
+              (shortage caused by safety stock reservation)
+            - **Real Shortage**: True GAP < 0  
+              (actual supply cannot meet demand)
+            """)
+        
         st.markdown("---")
+        
+        # ===== ROW 3: Example Scenarios =====
         st.markdown("### Example Scenarios")
         
         example_data = pd.DataFrame([
@@ -122,7 +185,7 @@ def render_formula_guide():
                 'Cause': '🚨 Real Shortage'
             },
             {
-                'Scenario': '🚨 Under Safety',
+                'Scenario': '⚠️ Under Safety',
                 'Supply': 3,
                 'Safety': 25,
                 'Demand': 3,
@@ -139,65 +202,28 @@ def render_formula_guide():
             use_container_width=True,
             hide_index=True,
             column_config={
-                'Scenario': st.column_config.TextColumn('Scenario', width='small'),
+                'Scenario': st.column_config.TextColumn('Scenario', width='medium'),
                 'Supply': st.column_config.NumberColumn('Supply', format='%d'),
                 'Safety': st.column_config.NumberColumn('Safety', format='%d'),
                 'Demand': st.column_config.NumberColumn('Demand', format='%d'),
-                'Safety Gap': st.column_config.TextColumn('Safety Gap', 
-                    help='Supply - Safety Stock (can be negative)'),
-                'Available': st.column_config.NumberColumn('Available', format='%d',
-                    help='max(0, Safety Gap)'),
-                'Net GAP': st.column_config.TextColumn('Net GAP'),
-                'True GAP': st.column_config.TextColumn('True GAP'),
-                'Cause': st.column_config.TextColumn('Cause', width='medium'),
+                'Safety Gap': st.column_config.TextColumn('Safety Gap', width='small'),
+                'Available': st.column_config.NumberColumn('Available', format='%d'),
+                'Net GAP': st.column_config.TextColumn('Net GAP', width='small'),
+                'True GAP': st.column_config.TextColumn('True GAP', width='small'),
+                'Cause': st.column_config.TextColumn('Cause', width='medium')
             }
         )
         
-        # Explanation for confusing case
-        st.markdown("---")
-        st.markdown("### 🔍 Why does Supply=3, Demand=3, Safety=25 give Net GAP=-3?")
-        
-        col1, col2 = st.columns([1, 1])
-        
-        with col1:
-            st.code("""
-Step 1: Safety Gap = Supply - Safety
-                   = 3 - 25 = -22
-        → Supply is 22 units BELOW safety
-
-Step 2: Available = max(0, Safety Gap)
-                  = max(0, -22) = 0
-        → No supply "available" for demand
-
-Step 3: Net GAP = Available - Demand
-               = 0 - 3 = -3
-        → Full demand becomes shortage
-            """, language="text")
-        
-        with col2:
-            st.info("""
-            💡 **Business Meaning:**
-            
-            Even though you have 3 units to cover 3 units demand,
-            your safety requirement is 25 units.
-            
-            Those 3 units **should be reserved** as partial safety buffer,
-            so **no supply is "available"** for new demand.
-            
-            **Action:** Order at least 22 more units to meet safety.
-            """)
-        
-        # Quick tips
-        st.markdown("---")
         st.info("""
-        💡 **Quick Tips:**
-        - **Safety Gap < 0**: Supply is below safety requirement (⚠️ problem!)
-        - **Net GAP < 0**: Shortage considering safety requirements
-        - **True GAP < 0**: Real shortage (not enough stock even without safety)
-        - **Net GAP < 0 but True GAP ≥ 0**: Safety stock is causing the shortage
+        💡 **Key Insight**: The "Under Safety" scenario shows why Safety Gap column is important.
+        Even when True GAP = 0 (supply equals demand), the item shows as shortage because 
+        supply (3) is below safety requirement (25), leaving no Available Supply for demand.
         """)
 
 
+# =============================================================================
+# KPI CARDS
+# =============================================================================
 def render_kpi_cards(metrics: Dict[str, Any], include_safety: bool = False):
     """Render KPI metric cards"""
     
@@ -312,6 +338,9 @@ def render_kpi_cards(metrics: Dict[str, Any], include_safety: bool = False):
                 )
 
 
+# =============================================================================
+# HELPER FUNCTIONS
+# =============================================================================
 def _format_safety_gap(value: float, formatter: GAPFormatter) -> str:
     """Format safety gap with visual indicator"""
     if pd.isna(value):
@@ -325,24 +354,30 @@ def _format_safety_gap(value: float, formatter: GAPFormatter) -> str:
         return f"🟢 {formatter.format_number(value, show_sign=True)}"
 
 
+def _get_status_display(status: str) -> str:
+    """Get formatted status display with icon"""
+    icon = STATUS_ICONS_V45.get(status, '❓')
+    label = status.replace('_', ' ').title()
+    return f"{icon} {label}"
+
+
+# =============================================================================
+# DETAILED DISPLAY - v4.5
+# =============================================================================
 def prepare_detailed_display(
     df: pd.DataFrame,
     formatter: GAPFormatter,
     include_safety: bool = False,
     include_expired: bool = False
 ) -> pd.DataFrame:
-    """
-    Prepare display dataframe with selected meaningful columns
-    IMPROVED v4.4: Added Safety Gap and Shortage Cause columns
-    """
+    """Prepare display dataframe with columns matching v4.5 logic"""
     
     if df.empty:
         return df
     
-    # Create a copy for display
     display_df = pd.DataFrame()
     
-    # Product identification (no product_id, using pt_code instead)
+    # Product identification
     if 'pt_code' in df.columns:
         display_df['PT Code'] = df['pt_code']
     if 'product_name' in df.columns:
@@ -352,7 +387,7 @@ def prepare_detailed_display(
     if 'standard_uom' in df.columns:
         display_df['UOM'] = df['standard_uom']
     
-    # Supply columns (raw values)
+    # Supply columns
     if 'total_supply' in df.columns:
         display_df['Total Supply'] = df['total_supply'].apply(
             lambda x: formatter.format_number(x, field_name='total_supply')
@@ -385,14 +420,13 @@ def prepare_detailed_display(
     if 'demand_forecast' in df.columns:
         display_df['Forecast'] = df['demand_forecast'].apply(formatter.format_number)
     
-    # Safety Stock columns (when enabled) - IMPROVED ORDER
+    # Safety Stock columns (when enabled)
     if include_safety:
         if 'safety_stock_qty' in df.columns:
             display_df['Safety Stock'] = df['safety_stock_qty'].apply(
                 lambda x: formatter.format_number(x, field_name='safety_stock_qty')
             )
         
-        # NEW v4.4: Safety Gap column
         if 'safety_gap' in df.columns:
             display_df['Safety Gap'] = df['safety_gap'].apply(
                 lambda x: _format_safety_gap(x, formatter)
@@ -403,24 +437,23 @@ def prepare_detailed_display(
                 lambda x: formatter.format_number(x, field_name='available_supply')
             )
     
-    # GAP Analysis - Keep both Net GAP and True GAP
+    # GAP Analysis
     if 'net_gap' in df.columns:
         display_df['Net GAP'] = df['net_gap'].apply(
             lambda x: formatter.format_number(x, show_sign=True)
         )
     
-    # True GAP - Important to keep for transparency
     if 'true_gap' in df.columns:
         display_df['True GAP'] = df['true_gap'].apply(
             lambda x: formatter.format_number(x, show_sign=True)
         )
-    elif include_safety and 'total_supply' in df.columns and 'total_demand' in df.columns:
+    elif 'total_supply' in df.columns and 'total_demand' in df.columns:
         true_gap = df['total_supply'] - df['total_demand']
         display_df['True GAP'] = true_gap.apply(
             lambda x: formatter.format_number(x, show_sign=True)
         )
     
-    # NEW v4.4: Shortage Cause column
+    # Shortage Cause
     if 'shortage_cause' in df.columns:
         display_df['Shortage Cause'] = df['shortage_cause']
     
@@ -471,25 +504,9 @@ def prepare_detailed_display(
             lambda x: formatter.format_currency(x, abbreviate=True)
         )
     
-    # Status columns
+    # Status columns - v4.5 with new icons
     if 'gap_status' in df.columns:
-        status_icons = {
-            'CRITICAL_BREACH': '🚨',
-            'SEVERE_SHORTAGE': '🔴',
-            'HIGH_SHORTAGE': '🟠',
-            'MODERATE_SHORTAGE': '🟡',
-            'BALANCED': '✅',
-            'LIGHT_SURPLUS': '🔵',
-            'MODERATE_SURPLUS': '🟣',
-            'HIGH_SURPLUS': '🟠',
-            'SEVERE_SURPLUS': '🔴',
-            'BELOW_SAFETY': '⚠️',
-            'NO_DEMAND': '⚪',
-            'NO_ACTIVITY': '⚪'
-        }
-        display_df['Status'] = df['gap_status'].map(
-            lambda x: f"{status_icons.get(x, '❓')} {x.replace('_', ' ').title()}"
-        )
+        display_df['Status'] = df['gap_status'].apply(_get_status_display)
     
     if 'priority' in df.columns:
         priority_map = {1: 'P1-Critical', 2: 'P2-High', 3: 'P3-Medium', 4: 'P4-Low', 99: 'P99-OK'}
@@ -504,7 +521,7 @@ def prepare_detailed_display(
             lambda x: f"{int(x):,}" if pd.notna(x) and x > 0 else "-"
         )
     
-    # Expired inventory columns (if included)
+    # Expired inventory columns
     if include_expired:
         if 'expired_quantity' in df.columns:
             display_df['⚠️ Expired Qty'] = df['expired_quantity'].apply(
@@ -519,6 +536,9 @@ def prepare_detailed_display(
     return display_df
 
 
+# =============================================================================
+# DATA TABLE
+# =============================================================================
 def render_data_table(
     df: pd.DataFrame,
     items_per_page: int = 25,
@@ -527,7 +547,7 @@ def render_data_table(
     include_safety: bool = False,
     include_expired: bool = False
 ):
-    """Enhanced data table with column visibility control and highlighting"""
+    """Enhanced data table with v4.5 status display"""
     
     if formatter is None:
         formatter = GAPFormatter()
@@ -536,7 +556,6 @@ def render_data_table(
         st.info("No data matches current filters")
         return None
     
-    # Prepare display dataframe
     display_df = prepare_detailed_display(
         df, 
         formatter, 
@@ -544,7 +563,7 @@ def render_data_table(
         include_expired=include_expired
     )
     
-    # Define default visible columns (essential only)
+    # Default visible columns
     default_visible = [
         'PT Code', 'Product Name', 'Brand',
         'Total Supply', 'Total Demand', 
@@ -554,119 +573,60 @@ def render_data_table(
     
     # Add safety-related columns if enabled
     if include_safety:
-        # Insert after Total Demand
         idx = default_visible.index('Total Demand') + 1
         safety_cols = ['Safety Stock', 'Safety Gap', 'Available', 'True GAP', 'Shortage Cause']
         for i, col in enumerate(safety_cols):
             if col in display_df.columns:
                 default_visible.insert(idx + i, col)
     
-    # Configure columns with enhanced styling
+    # Configure columns
     column_config = {}
     
-    # Style Net GAP column with blue highlighting
     if 'Net GAP' in display_df.columns:
         column_config['Net GAP'] = st.column_config.TextColumn(
             'Net GAP',
-            help='Available Supply minus Demand (primary metric)',
+            help='Available Supply - Demand. Negative = Shortage (always!)',
             width='small'
         )
     
-    # Style True GAP column with purple highlighting
     if 'True GAP' in display_df.columns:
         column_config['True GAP'] = st.column_config.TextColumn(
             'True GAP',
-            help='Total Supply minus Demand (ignores safety stock)',
+            help='Total Supply - Demand (ignores safety stock)',
             width='small'
         )
     
-    # Style Safety Gap column
     if 'Safety Gap' in display_df.columns:
         column_config['Safety Gap'] = st.column_config.TextColumn(
             'Safety Gap',
-            help='Total Supply - Safety Stock. Negative means supply is below safety requirement!',
+            help='Supply - Safety Stock. Negative = supply below safety!',
             width='small'
         )
     
-    # Style Shortage Cause column
     if 'Shortage Cause' in display_df.columns:
         column_config['Shortage Cause'] = st.column_config.TextColumn(
             'Shortage Cause',
-            help='Explains WHY there is a shortage',
+            help='Why shortage exists: Real or Safety-induced',
             width='medium'
         )
     
-    # Configure other important columns with help text
+    if 'Status' in display_df.columns:
+        column_config['Status'] = st.column_config.TextColumn(
+            'Status',
+            help='v4.5: Based on Net GAP sign (negative=Shortage, positive=Surplus)',
+            width='medium'
+        )
+    
     help_texts = {
         'Coverage %': 'Available Supply as percentage of Demand',
-        'Available': 'Supply available after safety stock reservation = max(0, Supply - Safety)',
+        'Available': 'Supply after safety reservation = max(0, Supply - Safety)',
         'Safety Stock': 'Minimum buffer required',
-        'Safety Coverage': 'How many times safety stock is covered',
         'At Risk Value': 'Revenue at risk due to shortage'
     }
     
     for col, help_text in help_texts.items():
         if col in display_df.columns:
-            column_config[col] = st.column_config.Column(
-                col,
-                help=help_text
-            )
-    
-    # Apply pandas styling for highlighting
-    def style_dataframe(df_slice):
-        """Apply color styling to specific columns"""
-        styled_df = df_slice.style
-        
-        # Style Net GAP column (blue background)
-        if 'Net GAP' in df_slice.columns:
-            styled_df = styled_df.apply(
-                lambda x: ['background-color: rgba(59, 130, 246, 0.15)' if col == 'Net GAP' else '' 
-                          for col in x.index],
-                axis=0
-            )
-        
-        # Style True GAP column (purple background)
-        if 'True GAP' in df_slice.columns:
-            styled_df = styled_df.apply(
-                lambda x: ['background-color: rgba(147, 51, 234, 0.15)' if col == 'True GAP' else ''
-                          for col in x.index],
-                axis=0
-            )
-        
-        # Style Safety Gap column (orange background for negative)
-        if 'Safety Gap' in df_slice.columns:
-            styled_df = styled_df.apply(
-                lambda x: ['background-color: rgba(251, 146, 60, 0.15)' if col == 'Safety Gap' else ''
-                          for col in x.index],
-                axis=0
-            )
-        
-        # Apply conditional formatting for negative values in GAP columns
-        def color_negative(val):
-            """Color negative values red"""
-            if isinstance(val, str) and val.startswith('-'):
-                return 'color: #DC2626; font-weight: bold'
-            elif isinstance(val, str) and val.startswith('+'):
-                return 'color: #059669; font-weight: bold'
-            elif isinstance(val, str) and '🔴' in val:
-                return 'color: #DC2626; font-weight: bold'
-            return ''
-        
-        gap_columns = ['Net GAP', 'True GAP', 'Safety Gap']
-        for col in gap_columns:
-            if col in df_slice.columns:
-                styled_df = styled_df.applymap(color_negative, subset=[col])
-        
-        # Highlight critical status rows
-        if 'Priority' in df_slice.columns:
-            def highlight_critical(row):
-                if row['Priority'] == 'P1-Critical':
-                    return ['background-color: rgba(239, 68, 68, 0.1)'] * len(row)
-                return [''] * len(row)
-            
-            styled_df = styled_df.apply(highlight_critical, axis=1)
-        
-        return styled_df
+            column_config[col] = st.column_config.Column(col, help=help_text)
     
     # Pagination
     total_items = len(display_df)
@@ -676,26 +636,22 @@ def render_data_table(
     start_idx = (page - 1) * items_per_page
     end_idx = min(start_idx + items_per_page, total_items)
     
-    # Display info with legend
+    # Display info
     col1, col2, col3 = st.columns([2, 2, 2])
     with col1:
         st.caption(f"Showing {start_idx+1}-{end_idx} of {total_items} items")
     with col2:
         st.caption("🔵 Net GAP | 🟣 True GAP | 🟠 Safety Gap")
     with col3:
-        st.caption("👁️ Click column headers to show/hide")
+        st.caption("v4.5: Net GAP < 0 = Always Shortage")
     
-    # Apply styling and display table
-    styled_display = style_dataframe(display_df.iloc[start_idx:end_idx])
-    
-    # Display table with styling
+    # Display table
     st.dataframe(
-        styled_display,
+        display_df.iloc[start_idx:end_idx],
         use_container_width=True,
         hide_index=True,
         column_config=column_config,
         height=min(600, (end_idx - start_idx) * 35 + 50),
-        # Enable column visibility toggle
         key=f"gap_table_{page}"
     )
     
@@ -707,6 +663,9 @@ def render_data_table(
     }
 
 
+# =============================================================================
+# PAGINATION
+# =============================================================================
 def render_pagination(current_page: int, total_pages: int, key_prefix: str = "page"):
     """Render pagination controls"""
     
@@ -744,14 +703,15 @@ def render_pagination(current_page: int, total_pages: int, key_prefix: str = "pa
     return new_page
 
 
+# =============================================================================
+# STATUS SUMMARY
+# =============================================================================
 def render_status_summary(gap_df: pd.DataFrame):
     """Render detailed status summary"""
-    from .constants import GAP_CATEGORIES
     
     if gap_df.empty:
         return
     
-    # Count by category
     counts = {}
     for category, config in GAP_CATEGORIES.items():
         mask = gap_df['gap_status'].isin(config['statuses'])
@@ -764,7 +724,6 @@ def render_status_summary(gap_df: pd.DataFrame):
                 'label': config['label']
             }
     
-    # Display as metrics
     cols = st.columns(len(counts))
     for idx, (category, data) in enumerate(counts.items()):
         with cols[idx]:
@@ -775,14 +734,17 @@ def render_status_summary(gap_df: pd.DataFrame):
             )
 
 
+# =============================================================================
+# QUICK FILTER
+# =============================================================================
 def render_quick_filter():
-    """Render quick filter for results"""
+    """Render quick filter for results - v4.5"""
     filter_options = {
         'all': '📊 All Items',
         'shortage': '🔴 Shortage Only',
-        'optimal': '✅ Optimal Only',
+        'optimal': '✅ Balanced Only',
         'surplus': '📦 Surplus Only',
-        'inactive': '⭕ No Demand',
+        'inactive': '⚪ No Demand',
         'critical': '🚨 Critical Only'
     }
     
@@ -793,7 +755,7 @@ def render_quick_filter():
         horizontal=True,
         label_visibility="collapsed",
         key="quick_filter",
-        help="Filter displayed results by status"
+        help="Filter by status category (v4.5 logic)"
     )
     
     return selected
@@ -801,7 +763,6 @@ def render_quick_filter():
 
 def apply_quick_filter(df: pd.DataFrame, filter_type: str) -> pd.DataFrame:
     """Apply quick filter to dataframe"""
-    from .constants import GAP_CATEGORIES
     
     if filter_type == 'all' or df.empty:
         return df
@@ -824,6 +785,9 @@ def apply_quick_filter(df: pd.DataFrame, filter_type: str) -> pd.DataFrame:
     return df
 
 
+# =============================================================================
+# EXPIRED INVENTORY
+# =============================================================================
 def render_expired_inventory_summary(gap_df: pd.DataFrame):
     """Render expired inventory summary alert"""
     
@@ -840,7 +804,6 @@ def render_expired_inventory_summary(gap_df: pd.DataFrame):
             f"with total {total_expired:,.0f} units expired"
         )
         
-        # Top expired products
         top_expired = gap_df[gap_df['expired_quantity'] > 0].nlargest(5, 'expired_quantity')
         
         if not top_expired.empty:
